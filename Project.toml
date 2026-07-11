@@ -1,0 +1,25 @@
+name = "DataFrameAggrSpec"
+uuid = "4c62cbce-0791-40fe-9350-fe7851d5d418"
+version = "0.1.0"
+authors = ["tonyhffong <tonyhffong@users.noreply.github.com> and contributors"]
+
+[deps]
+CategoricalArrays = "324d7699-5711-5eae-9e2f-1d82baa6b597"
+DataFrames = "a93c6f00-e57d-5684-b7b6-d8193f3e46c0"
+Format = "1fa38f19-a742-5d3f-a2b9-30dd87b9d5f8"
+Statistics = "10745b16-79ce-11e8-11f9-7d13ad32a3b2"
+
+[compat]
+CategoricalArrays = "1"
+DataFrames = "1"
+Format = "1"
+Statistics = "1.11.1"
+StatsBase = "0.34"
+julia = "1.11"
+
+[extras]
+StatsBase = "2913bbd2-ae8a-5f71-8c99-4fb6c76f3a91"
+Test = "8dfed614-e22c-5e08-85e1-65c5234f0b40"
+
+[targets]
+test = ["StatsBase", "Test"]
