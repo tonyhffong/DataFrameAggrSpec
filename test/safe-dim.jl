@@ -3,6 +3,8 @@ using DataFrames
 using CategoricalArrays
 using Test
 
+import DataFrameAggrSpec: WindowDim, PivotDim, dependencies   # internals, white-box tests
+
 # Per-operator tests for SAFE DIMENSION operators, mirroring
 # docs/safe-dimension-operators.md. When a new dimension operator is added to
 # the SafeOps registry, its tests belong here; the DSL machinery itself
@@ -83,14 +85,14 @@ end
     @test dependencies(d) == [:TestScr]
 
     # whole-frame: district TestScr sums [d1=30, d2=50, d3=30, d4=40, d5=10]
-    out = dim(df, d)
+    out = dim(df, [d])
     @test string.(out.qd) == ["3. [50%, 75%)", "3. [50%, 75%)", "4. [75%, 100%]",
                               "3. [50%, 75%)", "4. [75%, 100%]", "1. [0%, 25%)"]
 
     # trusted Expr form takes the same fixup path
     d2 = PivotDim(:qd, :( quantiles(:TestScr, [.25, .5, .75], [:District]) ))
     @test d2.by == [:District]
-    @test isequal(string.(dim(df, d2).qd), string.(out.qd))
+    @test isequal(string.(dim(df, [d2]).qd), string.(out.qd))
 
     # in a chain: pivot kind + left context
     keycols, dims = DataFrameAggrSpec.normalize_chain(

@@ -29,7 +29,7 @@ function pivottable(
 )
     keycols, dims = normalize_chain(chain)
     if !isempty(dims)
-        df = dim(df, dims...; hints = hints)
+        df = applydims!(copyframe(df), dims; hints = hints)
     end
     aggregate(df, keycols; hints = hints)
 end
@@ -48,8 +48,8 @@ end
 (t::DimTransform)(df::AbstractDataFrame) =
     dim(df, t.specs...; hints = t.hints, replace = t.replace)
 
-dim(specs...; hints::AggrHints = AggrHints(), replace::Bool = false) =
-    DimTransform(specs, hints, replace)
+dim(chains::Union{Pair,AbstractVector,Tuple}...; hints::AggrHints = AggrHints(),
+    replace::Bool = false) = DimTransform(chains, hints, replace)
 
 struct PivotTransform
     chain::Any

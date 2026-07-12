@@ -5,6 +5,8 @@ using Statistics
 using StatsBase
 using Test
 
+import DataFrameAggrSpec: WindowDim, PivotDim, dependencies   # internals, white-box tests
+
 @testset "grammar acceptance" begin
     # calls below are DIRECT (no invokelatest): the untrusted path never evals
 
@@ -118,7 +120,7 @@ end
     # C1 in EnrlTot order: d3(30,scr30), d2(50,scr50), d1(100,scr10), d1(100,scr20)
     d = WindowDim(:cum, dim"cumsum(TestScr)"; by = :County, order = :EnrlTot)
     @test dependencies(d) == [:TestScr, :EnrlTot]   # spec refs ∪ order columns
-    @test dim(df, d).cum == [90.0, 110.0, 80.0, 30.0, 50.0, 10.0]
+    @test dim(df, [d]).cum == [90.0, 110.0, 80.0, 30.0, 50.0, 10.0]
 
     # chain: safe pivot dim == trusted pivot dim, kind/fixup/context inferred
     safe_chain = [:County, :top1 => dim"topnames(District, TestScr, 1)"]

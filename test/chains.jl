@@ -2,7 +2,7 @@ using DataFrameAggrSpec
 using DataFrames
 using Test
 
-import DataFrameAggrSpec: normalize_chain
+import DataFrameAggrSpec: normalize_chain, WindowDim, PivotDim, dependencies   # internals, white-box tests
 
 @testset "normalize_chain" begin
     # left context accumulates across mixed entries
@@ -90,6 +90,28 @@ end
     # string chain end-to-end
     df4 = dim(df, ["County", ["top1", "topnames(District, TestScr, 1)"]])
     @test string.(df4.top1) == string.(df2.top1)
+end
+
+@testset "chains are the only public dim entry" begin
+    df = DataFrame(region = ["E", "E", "W"], sales = [1.0, 3.0, 5.0])
+
+    # chain forms fully replace the old direct-constructor calls
+    a = dim(df, [:region, :share => :( :sales ./ sum(:sales) )])
+    b = dim(df, [WindowDim(:share, :( :sales ./ sum(:sales) ), by = :region)])
+    @test a.share == b.share
+
+    c = dim(df, [:top1 => dimspec(:( topnames(:region, :sales, 1) ); kind = :pivot)])
+    d = dim(df, [PivotDim(:top1, :( topnames(:region, :sales, 1) ))])
+    @test string.(c.top1) == string.(d.top1)
+
+    # the surface is locked: bare concrete dims are not accepted by dim/dim!
+    w = WindowDim(:t, :( sum(:sales) ), by = :region)
+    @test_throws MethodError dim(df, w)
+    @test_throws MethodError dim!(copy(df), w)
+    # the internal types are NOT exported
+    @test !Base.isexported(DataFrameAggrSpec, :WindowDim)
+    @test !Base.isexported(DataFrameAggrSpec, :PivotDim)
+    @test !Base.isexported(DataFrameAggrSpec, :dependencies)
 end
 
 @testset "interlacing trusted and untrusted dims in one chain" begin

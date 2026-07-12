@@ -3,6 +3,8 @@ using DataFrames
 using CategoricalArrays
 using Test
 
+import DataFrameAggrSpec: WindowDim, PivotDim, dependencies   # internals, white-box tests
+
 # County C1: districts d1 (2 rows), d2, d3 ; County C2: d4, d5
 pddf() = DataFrame(
     County = ["C1", "C1", "C1", "C1", "C2", "C2"],
@@ -29,37 +31,51 @@ end
 
     # classify districts by their summed TestScr, whole frame (no context)
     # district sums: d1=30, d2=50, d3=30, d4=40, d5=10 -> top2: d2, d4
-    df2 = dim(df, PivotDim(:top2, :( topnames(:District, :TestScr, 2) )))
+    df2 = dim(df, [PivotDim(:top2, :( topnames(:District, :TestScr, 2) ))])
     @test df2.top2 == ["Others", "Others", "1. d2", "Others", "2. d4", "Others"]
     @test df2.top2 isa CategoricalArray
 
     # same classification per County (context partitioning)
     # C1: d2=50 -> 1, d1=30 & d3=30 tie -> both 2 ; C2: d4 -> 1, d5 -> 2
-    df3 = dim(df, PivotDim(:ctop, :( topnames(:District, :TestScr, 2) ),
-                           context = :County))
+    df3 = dim(df, [PivotDim(:ctop, :( topnames(:District, :TestScr, 2) ),
+                            context = :County)])
     @test df3.ctop == ["2. d1", "2. d1", "1. d2", "2. d3", "1. d4", "2. d5"]
     @test df3.ctop isa CategoricalArray
     @test issorted(unique(sort(df3.ctop)))    # rank prefixes keep lexical order sane
 
     # discretize over group aggregates (EnrlTot sums: d1=200, d2=50, d3=30, d4=80, d5=20)
-    df4 = dim(df, PivotDim(:size, :( discretize(:EnrlTot, [35, 60]) ), by = :District))
+    df4 = dim(df, [PivotDim(:size, :( discretize(:EnrlTot, [35, 60]) ), by = :District)])
     @test df4.size == ["3. 60+", "3. 60+", "2. 35…59", "1. ≤34", "3. 60+", "1. ≤34"]
 
     # hints drive the dependency aggregation: mean instead of default sum
     # district means: d1=15, d2=50, d3=30, d4=40, d5=10 -> top2: d2, d4
-    df5 = dim(df, PivotDim(:top2m, :( topnames(:District, :TestScr, 2) ));
+    df5 = dim(df, [PivotDim(:top2m, :( topnames(:District, :TestScr, 2) ))];
               hints = AggrHints(:TestScr => :( sum(:_) / length(:_) )))
     @test df5.top2m == ["Others", "Others", "1. d2", "Others", "2. d4", "Others"]
 end
 
 @testset "Dimension (legacy CalcPivot bridge)" begin
+    df = pddf()
+
+    # the bridge returns a CHAIN ENTRY: name => dimspec(...)
     cp = CalcPivot(:( topnames(:District, :TestScr, 2) ))
-    d = Dimension(:t2, cp)
-    @test d isa PivotDim && d.by == [:District]
-    d2 = Dimension(:t3, cp; context = :County)
-    @test d2.context == [:County]
+    p = Dimension(:top2, cp)
+    @test p isa Pair && p.first == :top2
+    (_, dims) = DataFrameAggrSpec.normalize_chain([p])
+    @test dims[1] isa PivotDim && dims[1].by == [:District]
+
+    # end-to-end matches the direct construction
+    @test isequal(string.(dim(df, [p]).top2),
+                  string.(dim(df, [PivotDim(:top2, cp.spec)]).top2))
+
+    # the outer context comes from the chain prefix
+    (_, dims2) = DataFrameAggrSpec.normalize_chain([:County, Dimension(:ctop, cp)])
+    @test dims2[1].context == [:County]
+
+    # an empty-`by` CalcPivot becomes a window entry
     cpw = CalcPivot(:( discretize(:TestScr, [20.0]) ))
-    @test Dimension(:w, cpw) isa WindowDim
+    (_, dims3) = DataFrameAggrSpec.normalize_chain([Dimension(:w, cpw)])
+    @test dims3[1] isa WindowDim
 end
 
 @testset "equivalence with legacy liftCalcPivotToFunc" begin
@@ -73,6 +89,6 @@ end
     legacy = Base.invokelatest(f, df, :top2; TestScr = :sum)
     joined = leftjoin(df, legacy, on = :District)
 
-    new = dim(df, PivotDim(:top2, spec))
+    new = dim(df, [PivotDim(:top2, spec)])
     @test all(string.(joined.top2) .== string.(new.top2))
 end

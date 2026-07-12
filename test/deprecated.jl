@@ -4,6 +4,7 @@ using CategoricalArrays
 using Test
 
 import DataFrameAggrSpec: CalcPivotAggrDepCache, CalcPivotFuncCache
+import DataFrameAggrSpec: WindowDim, PivotDim, dependencies   # internals, white-box tests
 
 depdf() = DataFrame(
     County = ["C1", "C1", "C1", "C1", "C2", "C2"],
@@ -61,7 +62,7 @@ end
     spec = :( discretize(:EnrlTot, [35]; boundedness = ^(:boundedbelow)) )
     d = PivotDim(:bucket, spec; by = :District)
     @test dependencies(d) == [:EnrlTot]
-    df2 = dim(df, d)
+    df2 = dim(df, [d])
     # district EnrlTot sums: d1=200 d2=50 d3=30 d4=80 d5=20; below 35 -> missing
     @test string(df2.bucket[1]) == "1. 35+"
     @test ismissing(df2.bucket[4])

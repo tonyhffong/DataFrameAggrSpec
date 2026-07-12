@@ -11,12 +11,14 @@ module DataFrameAggrSpec
 #     lambda. `AggrHints` resolves per-column specs (col > eltype > default);
 #     `aggregate(df, keys; hints)` is the grouped reduction.
 #   * dimensioning — NEW columns computed from sibling rows sharing partition
-#     keys: `WindowDim` (row-level within a partition; supports `order`) and
-#     `PivotDim` (classify groups by their aggregates), applied via `dim`/`dim!`.
-#   * chains — pivot lists declaring dimensions inline, partitioned by their
-#     left context (chain.jl); `pivottable(df, chain; hints)` = dims + groupby +
-#     aggregate in one call. Curried `dim(...)`/`pivottable(...)` return
-#     callable transforms composable with `|>` and `∘`.
+#     keys, declared ONLY in chains: `name => spec` entries partitioned by
+#     their left context, options via `dimspec(spec; by, order, kind)`. Two
+#     kinds behind kind inference: window (row-level within a partition;
+#     supports `order`) and pivot (classify groups by their aggregates) —
+#     the types WindowDim/PivotDim are internals. Applied via `dim`/`dim!`;
+#     `pivottable(df, chain; hints)` = dims + groupby + aggregate in one call.
+#     Curried `dim(...)`/`pivottable(...)` return callable transforms
+#     composable with `|>` and `∘`.
 #   * presentation verbs — `discretize` (labeled/ranked binning), `topnames`
 #     (top-N ranking with tie/dense/"Others" handling), `lag`/`lead`.
 #   * legacy (deprecated, TermWin transition) — `CalcPivot` +
@@ -55,8 +57,9 @@ export SafeAggrSpec, SafeDimSpec, parseaggr, parsedim, @aggr_str, @dim_str
 export registerop!, registerclassifier!, listops
 # Aggregation hints + grouped aggregation
 export AggrHints, resolveaggr, aggrvalue, aggregate, pivottable
-# Dimensioning
-export WindowDim, PivotDim, Dimension, dimspec, dependencies, dim, dim!
+# Dimensioning -- chains are the only public entry; the window/pivot kinds and
+# their types (WindowDim/PivotDim) are internals behind kind inference + dimspec
+export Dimension, dimspec, dim, dim!
 # Aggregation / presentation verbs
 export uniqvalue, unionall, strjoinuniq, discretize, topnames, quantiles, lag, lead
 

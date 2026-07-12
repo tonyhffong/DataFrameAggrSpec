@@ -301,14 +301,14 @@ end
 
 # --------------------------------------------- Dimension (legacy bridge) --
 
-# `Dimension` exists ONLY to convert a legacy CalcPivot. For everything else:
-# construct WindowDim/PivotDim directly when standalone, or declare a
-# `name => spec` pair in a chain and let kind inference do the rest.
-# A CalcPivot's `by` are inner grouping keys; TermWin's tree supplied the
-# outer context implicitly by pre-filtering rows.
-Dimension(name::Symbol, cp::CalcPivot; context = Symbol[]) =
-    isempty(cp.by) ? WindowDim(name, cp.spec) :
-    PivotDim(name, cp.spec; by = cp.by, context = context)
+# `Dimension` exists ONLY to convert a legacy CalcPivot -- it returns a CHAIN
+# ENTRY (`name => dimspec(...)`) to splice after the applied-pivots prefix:
+#     dim(sdf, [appliedpivots..., Dimension(nextpivot, cp)]; hints)
+# A CalcPivot's `by` are inner grouping keys; the outer context comes from the
+# chain prefix (TermWin's tree used to supply it by pre-filtering rows).
+Dimension(name::Symbol, cp::CalcPivot) =
+    isempty(cp.by) ? (name => dimspec(cp.spec)) :
+    (name => dimspec(cp.spec; by = cp.by, kind = :pivot))
 
 # ------------------------------------------------------------- application --
 
@@ -343,33 +343,44 @@ function apply_dimension!(
     df
 end
 
-# dim! / dim: apply dimensions in order; a later dimension may reference an
-# earlier dimension's output column. Accepts concrete dimensions, name => spec
-# pairs, and chains (see chain.jl). `dim` copies (SubDataFrame-friendly) so
-# the input frame is never touched.
-function dim!(
+# applydims!: internal apply loop over resolved dimensions
+function applydims!(
     df::DataFrame,
-    specs...;
+    dims::Vector{AbstractDimension};
     hints::AggrHints = AggrHints(),
     replace::Bool = false,
 )
-    for s in specs
-        if isa(s, AbstractDimension)
-            apply_dimension!(df, s; hints = hints, replace = replace)
-        elseif isa(s, Pair)   # a single name => spec declaration, empty context
-            (_, dims) = normalize_chain([s])
-            apply_dimension!(df, dims[1]; hints = hints, replace = replace)
-        else
-            (_, dims) = normalize_chain(s)
-            isempty(dims) &&
-                error("dim!: chain " * string(s) * " declares no dimensions")
-            for d in dims
-                apply_dimension!(df, d; hints = hints, replace = replace)
-            end
-        end
+    for d in dims
+        apply_dimension!(df, d; hints = hints, replace = replace)
     end
     df
 end
 
-dim(df::DataFrame, args...; kwargs...) = dim!(copy(df; copycols = false), args...; kwargs...)
-dim(df::SubDataFrame, args...; kwargs...) = dim!(DataFrame(df), args...; kwargs...)
+copyframe(df::DataFrame) = copy(df; copycols = false)
+copyframe(df::AbstractDataFrame) = DataFrame(df)   # SubDataFrame etc.
+
+# dim! / dim: CHAINS are the only public entry -- Symbol keys, `name => spec`
+# declarations (a bare Pair is a one-entry chain), sibling tuples, and
+# dimspec(...) options; see chain.jl. Dimensions apply in order, so a later
+# one may reference an earlier one's output column. `dim` copies
+# (SubDataFrame-friendly) so the input frame is never touched.
+function dim!(
+    df::DataFrame,
+    chains::Union{Pair,AbstractVector,Tuple}...;
+    hints::AggrHints = AggrHints(),
+    replace::Bool = false,
+)
+    for c in chains
+        if isa(c, Pair)   # a single name => spec declaration, empty context
+            (_, dims) = normalize_chain([c])
+        else
+            (_, dims) = normalize_chain(c)
+            isempty(dims) &&
+                error("dim!: chain " * string(c) * " declares no dimensions")
+        end
+        applydims!(df, dims; hints = hints, replace = replace)
+    end
+    df
+end
+
+dim(df::AbstractDataFrame, args...; kwargs...) = dim!(copyframe(df), args...; kwargs...)
