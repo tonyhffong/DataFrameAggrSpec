@@ -35,6 +35,9 @@ function AggrHints(pairs::Pair...; default::Function = defaultAggr)
     bycol = Dict{Symbol,Any}()
     bytype = Pair{Type,Any}[]
     for (k, v) in pairs
+        if isa(v, AbstractString)
+            v = parseaggr(v)   # Strings are UNTRUSTED: safe whitelist grammar
+        end
         if isa(k, Symbol)
             bycol[k] = v
         elseif isa(k, Type)
@@ -60,13 +63,11 @@ end
 # Normalize the lifted-aggregator return contract (scalar or 1x1 DataFrame) to a value.
 aggrvalue(ret) = isa(ret, AbstractDataFrame) ? ret[1, 1] : ret
 
-function liftAggrSpecToFunc(c::Symbol, dfa::String)
-    if haskey(DataFrameAggrCache, (c, dfa))
-        return DataFrameAggrCache[(c, dfa)]
-    end
-    ret = liftAggrSpecToFunc(c, Meta.parse(dfa))
-    DataFrameAggrCache[(c, dfa)] = ret
-end
+# Strings are UNTRUSTED: routed through the safe whitelist grammar (safe.jl).
+# Trusted specs are Exprs, Symbols, or Functions -- forms that cannot arrive
+# from a user's text field by accident. (parseaggr is defined later in the
+# module; this body only runs at call time, so include order is fine.)
+liftAggrSpecToFunc(c::Symbol, dfa::AbstractString) = liftAggrSpecToFunc(c, parseaggr(dfa))
 
 function liftAggrSpecToFunc(c::Symbol, dfa::Union{Function,Symbol,Expr})
     if isa(dfa, Function)

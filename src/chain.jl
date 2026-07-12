@@ -25,13 +25,13 @@ struct DimSpec
 end
 
 function dimspec(
-    spec::Union{Expr,AbstractString,Function};
+    spec::Union{Expr,AbstractString,Function,SafeDimSpec};
     by = Symbol[],
     order = Pair{Symbol,Bool}[],
     kind::Symbol = :auto,
 )
     if isa(spec, AbstractString)
-        spec = Meta.parse(spec)
+        spec = parsedim(spec)   # Strings are UNTRUSTED: safe whitelist grammar
     end
     if isa(spec, Expr)
         check_spec_call(spec, "dimspec")
@@ -41,10 +41,34 @@ function dimspec(
     DimSpec(spec, tosyms(by), normalize_order(order), kind)
 end
 
-# :auto kind: window, except a top-level `topnames` call (group classification)
-autokind(spec) =
-    isa(spec, Expr) && check_spec_call(spec, "dimension spec") == :topnames ? :pivot :
-    :window
+# :auto kind: window, except the classifier verbs (ClassifierVerbs table,
+# safe.jl). A single-column classifier (topnames) is always pivot; an
+# array-of-columns classifier (quantiles) is pivot only when the array is
+# present and non-empty — empty/omitted means "rank rows individually" =
+# window kind. Present-but-malformed grouping args still route to PivotDim
+# so its clear error fires.
+function autokind(spec)
+    isa(spec, Expr) || return :window
+    fname = check_spec_call(spec, "dimension spec")
+    meta = get(ClassifierVerbs, fname, nothing)
+    meta === nothing && return :window
+    (argpos, many) = meta
+    many || return :pivot
+    pa = positional_args(spec)
+    length(pa) < argpos && return :window
+    Base.Meta.isexpr(pa[argpos], :vect) && isempty(pa[argpos].args) && return :window
+    :pivot
+end
+
+function autokind(s::SafeDimSpec)
+    meta = get(ClassifierVerbs, s.fname, nothing)
+    meta === nothing && return :window
+    (argpos, many) = meta
+    many || return :pivot
+    length(s.posargs) < argpos && return :window
+    s.posargs[argpos] == Symbol[] && return :window
+    :pivot
+end
 
 # build a concrete dimension for a chain declaration under a left context
 function chain_dim(name::Symbol, payload, context::Vector{Symbol})
@@ -62,8 +86,9 @@ function chain_dim(name::Symbol, payload, context::Vector{Symbol})
         end
     elseif isa(payload, Function)
         WindowDim(name, payload; by = context)
-    elseif isa(payload, Expr) || isa(payload, AbstractString)
-        ex = isa(payload, AbstractString) ? Meta.parse(payload) : payload
+    elseif isa(payload, Expr) || isa(payload, AbstractString) || isa(payload, SafeDimSpec)
+        # Strings are UNTRUSTED: safe whitelist grammar (Exprs remain trusted)
+        ex = isa(payload, AbstractString) ? parsedim(payload) : payload
         if autokind(ex) == :pivot
             PivotDim(name, ex; context = context)  # topnames fixup supplies `by`
         else

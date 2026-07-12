@@ -54,8 +54,8 @@ end
     t = pivottable([:County]; hints = h) ∘ dim([:County, :etot => :( sum(:EnrlTot) )])
     @test isequal(t(df), out2)
 
-    # df ∘ transform sugar (left-to-right application)
-    @test (df ∘ dim(:etot => :( sum(:EnrlTot) ))).etot == fill(380, 6)
+    # single-pair transform applied via |>
+    @test (df |> dim(:etot => :( sum(:EnrlTot) ))).etot == fill(380, 6)
 
     # transform reuse across frames
     tt = dim([:County, :cshare => :( :EnrlTot ./ sum(:EnrlTot) )])

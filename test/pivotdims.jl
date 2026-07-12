@@ -16,7 +16,7 @@ pddf() = DataFrame(
     @test d.by == [:District]                 # topnames name column auto-added
     @test dependencies(d) == [:TestScr]
 
-    d2 = PivotDim(:sz, "discretize(:EnrlTot, [35, 60])", by = :District, context = :County)
+    d2 = PivotDim(:sz, "discretize(EnrlTot, [35, 60])", by = :District, context = :County)
     @test d2.by == [:District]
     @test d2.context == [:County]
     @test dependencies(d2) == [:EnrlTot]
@@ -52,17 +52,12 @@ end
     @test df5.top2m == ["Others", "Others", "1. d2", "Others", "2. d4", "Others"]
 end
 
-@testset "Dimension factory" begin
-    @test Dimension(:t, :( topnames(:District, :TestScr, 2) )) isa PivotDim
-    @test Dimension(:s, :( sum(:TestScr) ), by = :County) isa WindowDim
-    @test Dimension(:d, :( discretize(:EnrlTot, [35]) ), by = :District,
-                    kind = :pivot) isa PivotDim
-    @test_throws ErrorException Dimension(:x, :( sum(:TestScr) ), kind = :nope)
-
-    # legacy CalcPivot conversion
+@testset "Dimension (legacy CalcPivot bridge)" begin
     cp = CalcPivot(:( topnames(:District, :TestScr, 2) ))
     d = Dimension(:t2, cp)
     @test d isa PivotDim && d.by == [:District]
+    d2 = Dimension(:t3, cp; context = :County)
+    @test d2.context == [:County]
     cpw = CalcPivot(:( discretize(:TestScr, [20.0]) ))
     @test Dimension(:w, cpw) isa WindowDim
 end

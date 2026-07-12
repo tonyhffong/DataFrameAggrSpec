@@ -39,8 +39,8 @@ end
     df5 = dim(df, WindowDim(:allshare, :( :sales ./ sum(:sales) )))
     @test df5.allshare ≈ df.sales ./ sum(df.sales)
 
-    # String spec form
-    df6 = dim(df, WindowDim(:rtotal, "sum(:sales)", by = "region"))
+    # String spec form (Strings are untrusted: safe grammar, bare identifiers)
+    df6 = dim(df, WindowDim(:rtotal, "sum(sales)", by = "region"))
     @test df6.rtotal == df2.rtotal
 
     # Function spec form (receives the partition as an AbstractDataFrame)
@@ -56,7 +56,9 @@ end
     )
 
     # cumsum within region ordered by date; result scattered back to original rows
-    df2 = dim(df, WindowDim(:cum, :( cumsum(:sales) ), by = :region, order = :date))
+    dcum = WindowDim(:cum, :( cumsum(:sales) ), by = :region, order = :date)
+    @test dependencies(dcum) == [:sales, :date]   # spec refs ∪ order columns
+    df2 = dim(df, dcum)
     # E by date: (date=1,20) then (date=2,10) -> cum 20,30 ; W: 5,20,50
     @test df2.cum == [30.0, 5.0, 20.0, 50.0, 20.0]
 

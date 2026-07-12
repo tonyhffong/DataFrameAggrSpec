@@ -71,22 +71,26 @@ end
 
 function WindowDim(
     name::Symbol,
-    spec::Union{Expr,AbstractString,Function};
+    spec::Union{Expr,AbstractString,Function,SafeDimSpec};
     by = Symbol[],
     order = Pair{Symbol,Bool}[],
 )
     if isa(spec, AbstractString)
-        spec = Meta.parse(spec)
+        spec = parsedim(spec)   # Strings are UNTRUSTED: safe whitelist grammar
     end
     refs = Symbol[]
     if isa(spec, Expr)
         check_spec_call(spec, "WindowDim")
         refs = referenced_columns(spec)
+    elseif isa(spec, SafeDimSpec)
+        refs = copy(spec.cols)
     end
     WindowDim(name, spec, tosyms(by), normalize_order(order), refs)
 end
 
-dependencies(d::WindowDim) = d.refs
+# dependencies: every column the dimension needs -- the spec's references plus
+# any ordering columns (planners like TermWin read this to know what to carry)
+dependencies(d::WindowDim) = union(d.refs, Symbol[p.first for p in d.order])
 
 # window kernels: f(colvec1, colvec2, ...) compiled from the spec expression,
 # cached on the spec alone (partitioning/ordering happen outside the kernel).
@@ -113,6 +117,11 @@ function window_kernel(ex::Expr)
     WindowKernelCache[ex] = (f, cols)
 end
 
+# kernel: (f, cols) for any dimension spec kind. Trusted Exprs go through the
+# eval'd (cached) window_kernel; untrusted SafeDimSpecs are already compiled.
+kernel(ex::Expr) = window_kernel(ex)
+kernel(s::SafeDimSpec) = (s.f, s.cols)
+
 # partition row-index lists for a by-key set (empty by = one whole-frame partition)
 function partition_indices(df::AbstractDataFrame, by::Vector{Symbol})
     if isempty(by)
@@ -130,7 +139,7 @@ end
 function window_values(df::AbstractDataFrame, d::WindowDim)
     n = nrow(df)
     out = Vector{Any}(undef, n)
-    kernelf, cols = isa(d.spec, Function) ? (d.spec, Symbol[]) : window_kernel(d.spec)
+    kernelf, cols = isa(d.spec, Function) ? (d.spec, Symbol[]) : kernel(d.spec)
     for idxs in partition_indices(df, d.by)
         ridx = idxs
         if !isempty(d.order)
@@ -168,43 +177,87 @@ end
 
 struct PivotDim <: AbstractDimension
     name::Symbol
-    spec::Expr
+    spec::Union{Expr,SafeDimSpec}
     by::Vector{Symbol}       # inner grouping keys (the groups being classified)
     context::Vector{Symbol}  # outer partition: classification runs per context group
     deps::Vector{Symbol}     # referenced non-key columns, aggregated per inner group
 end
 
+# grouping keys implied by classifier verbs (ClassifierVerbs table, safe.jl),
+# auto-added to a PivotDim's `by` -- e.g. topnames' name column (argument 1),
+# quantiles' grouping-column array (argument 3)
+expr_sym(a) =
+    isa(a, QuoteNode) && isa(a.value, Symbol) ? a.value :
+    Base.Meta.isexpr(a, :quote, 1) && isa(a.args[1], Symbol) ? a.args[1] : nothing
+
+groupkey_error(fname::Symbol, argpos::Int, many::Bool) = error(
+    string(fname) * ": argument " * string(argpos) * " expects " *
+    (many ? "an array of grouping columns" : "a grouping column (name column)"),
+)
+
+function pivot_groupkeys(fname::Symbol, spec::Expr)
+    meta = get(ClassifierVerbs, fname, nothing)
+    meta === nothing && return Symbol[]
+    (argpos, many) = meta
+    pa = positional_args(spec)
+    if many
+        (length(pa) >= argpos && Base.Meta.isexpr(pa[argpos], :vect)) ||
+            groupkey_error(fname, argpos, many)
+        syms = [expr_sym(a) for a in pa[argpos].args]
+        any(s -> s === nothing, syms) && groupkey_error(fname, argpos, many)
+        return Symbol[syms...]
+    else
+        s = length(pa) >= argpos ? expr_sym(pa[argpos]) : nothing
+        s === nothing && groupkey_error(fname, argpos, many)
+        return Symbol[s]
+    end
+end
+
+function pivot_groupkeys(fname::Symbol, sd::SafeDimSpec)
+    meta = get(ClassifierVerbs, fname, nothing)
+    meta === nothing && return Symbol[]
+    (argpos, many) = meta
+    if many
+        (length(sd.posargs) >= argpos && isa(sd.posargs[argpos], Vector{Symbol})) ||
+            groupkey_error(fname, argpos, many)
+        return copy(sd.posargs[argpos])
+    else
+        (length(sd.posargs) >= argpos && isa(sd.posargs[argpos], Symbol)) ||
+            groupkey_error(fname, argpos, many)
+        return Symbol[sd.posargs[argpos]]
+    end
+end
+
 function PivotDim(
     name::Symbol,
-    spec::Union{Expr,AbstractString};
+    spec::Union{Expr,AbstractString,SafeDimSpec};
     by = Symbol[],
     context = Symbol[],
 )
     if isa(spec, AbstractString)
-        spec = Meta.parse(spec)
+        spec = parsedim(spec)   # Strings are UNTRUSTED: safe whitelist grammar
     end
-    fname = check_spec_call(spec, "PivotDim")
+    if isa(spec, SafeDimSpec)
+        fname = spec.fname
+        refs = copy(spec.cols)
+    else
+        fname = check_spec_call(spec, "PivotDim")
+        refs = referenced_columns(spec)
+    end
     byv = tosyms(by)
     ctxv = tosyms(context)
-    if fname == :topnames # ensure the name column is an inner grouping key
-        if isa(spec.args[2], QuoteNode)
-            name_col = spec.args[2].value
-        elseif Base.Meta.isexpr(spec.args[2], :quote)
-            name_col = spec.args[2].args[1]
-        else
-            error("topnames: 1st argument expects a symbol (name column)")
-        end
-        in(name_col, byv) || push!(byv, name_col)
+    for k in pivot_groupkeys(fname, spec)
+        in(k, byv) || push!(byv, k)
     end
     isempty(byv) && error("PivotDim " * string(name) * ": non-empty `by` required")
-    deps = setdiff(referenced_columns(spec), union(byv, ctxv))
+    deps = setdiff(refs, union(byv, ctxv))
     PivotDim(name, spec, byv, ctxv, deps)
 end
 
 dependencies(d::PivotDim) = d.deps
 
 function pivot_values(df::AbstractDataFrame, d::PivotDim, hints::AggrHints)
-    kernelf, cols = window_kernel(d.spec)
+    kernelf, cols = kernel(d.spec)
     aggrfuncs = Dict{Symbol,Function}(
         c => liftAggrSpecToFunc(c, resolveaggr(hints, c, eltype(df[!, c]))) for c in d.deps
     )
@@ -246,37 +299,13 @@ function pivot_values(df::AbstractDataFrame, d::PivotDim, hints::AggrHints)
     anycat ? categorical(identity.(out)) : identity.(out)
 end
 
-# ------------------------------------------------------- Dimension factory --
+# --------------------------------------------- Dimension (legacy bridge) --
 
-# umbrella constructor: picks the kind. :auto = window, except a top-level
-# `topnames` call which is inherently group-classifying (matches legacy CalcPivot).
-function Dimension(
-    name::Symbol,
-    spec::Union{Expr,AbstractString,Function};
-    by = Symbol[],
-    order = Pair{Symbol,Bool}[],
-    context = Symbol[],
-    kind::Symbol = :auto,
-)
-    if isa(spec, AbstractString)
-        spec = Meta.parse(spec)
-    end
-    if kind == :auto
-        kind =
-            isa(spec, Expr) && check_spec_call(spec, "Dimension") == :topnames ? :pivot :
-            :window
-    end
-    if kind == :window
-        WindowDim(name, spec; by = by, order = order)
-    elseif kind == :pivot
-        PivotDim(name, spec; by = by, context = context)
-    else
-        error("Dimension: kind must be :window or :pivot, got " * string(kind))
-    end
-end
-
-# legacy conversion: a CalcPivot's `by` are inner grouping keys; TermWin's tree
-# supplied the outer context implicitly by pre-filtering rows
+# `Dimension` exists ONLY to convert a legacy CalcPivot. For everything else:
+# construct WindowDim/PivotDim directly when standalone, or declare a
+# `name => spec` pair in a chain and let kind inference do the rest.
+# A CalcPivot's `by` are inner grouping keys; TermWin's tree supplied the
+# outer context implicitly by pre-filtering rows.
 Dimension(name::Symbol, cp::CalcPivot; context = Symbol[]) =
     isempty(cp.by) ? WindowDim(name, cp.spec) :
     PivotDim(name, cp.spec; by = cp.by, context = context)

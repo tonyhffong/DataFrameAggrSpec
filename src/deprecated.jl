@@ -1,6 +1,9 @@
 struct CalcPivot
     spec::Expr
     by::Array{Symbol,1}
+    # FROZEN legacy: this String constructor keeps TRUSTED Meta.parse semantics
+    # (colon column syntax, eval'd spec) for old TermWin-era configs. Everywhere
+    # else in the package, plain Strings go through the safe whitelist grammar.
     CalcPivot(x::String, by::Array{Symbol,1} = Symbol[]) = CalcPivot(Meta.parse(x), by)
     CalcPivot(x::String, by::Symbol) = CalcPivot(Meta.parse(x), Symbol[by])
     function CalcPivot(x::Expr, by::Symbol)

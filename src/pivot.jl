@@ -59,8 +59,3 @@ end
 
 pivottable(chain::Union{AbstractVector,Tuple,Symbol}; hints::AggrHints = AggrHints()) =
     PivotTransform(chain, hints)
-
-# `df ∘ dim(...)`: Base's ∘ is function composition, but applying a transform to
-# a frame reads naturally in a left-to-right pipeline, so we lend it that meaning
-# for our own transform types (equivalent to df |> t)
-Base.:∘(df::AbstractDataFrame, t::Union{DimTransform,PivotTransform}) = t(df)

@@ -22,9 +22,10 @@ using Test
     h3 = AggrHints(; default = _ -> :maximum)
     @test resolveaggr(h3, :n, Int) == :maximum
 
-    # ingest a TermWin-style Dict{Any,Any}
+    # ingest a TermWin-style Dict{Any,Any}; String values become SAFE specs
     h4 = AggrHints(Dict{Any,Any}(:qty => "sum", AbstractString => :uniqvalue))
-    @test resolveaggr(h4, :qty, Int) == "sum"
+    @test resolveaggr(h4, :qty, Int) == parseaggr("sum")
+    @test resolveaggr(h4, :qty, Int) isa SafeAggrSpec
     @test resolveaggr(h4, :city, String) == :uniqvalue
 
     @test_throws ErrorException AggrHints("qty" => :sum)

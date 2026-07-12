@@ -28,9 +28,9 @@ import DataFrameAggrSpec: normalize_chain
     # pure-key chain declares nothing
     @test normalize_chain([:a, :b]) == ([:a, :b], DataFrameAggrSpec.AbstractDimension[])
 
-    # nested-vector + string form (GUI/config path)
+    # nested-vector + string form (GUI/config path; strings use the safe grammar)
     keycols2, dims2 = normalize_chain(
-        ["County", ["top5d", "topnames(:District, :TestScr, 5)"], "District"])
+        ["County", ["top5d", "topnames(District, TestScr, 5)"], "District"])
     @test keycols2 == [:County, :top5d, :District]
     @test dims2[1] isa PivotDim
     @test dims2[1].context == [:County]
@@ -88,6 +88,6 @@ end
     @test_throws ErrorException dim(df, [:County, :District])
 
     # string chain end-to-end
-    df4 = dim(df, ["County", ["top1", "topnames(:District, :TestScr, 1)"]])
+    df4 = dim(df, ["County", ["top1", "topnames(District, TestScr, 1)"]])
     @test string.(df4.top1) == string.(df2.top1)
 end

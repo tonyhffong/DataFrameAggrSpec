@@ -1,6 +1,6 @@
 name = "DataFrameAggrSpec"
 uuid = "4c62cbce-0791-40fe-9350-fe7851d5d418"
-version = "0.2.0"
+version = "0.3.0"
 authors = ["tonyhffong <tonyhffong@users.noreply.github.com> and contributors"]
 
 [deps]

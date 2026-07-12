@@ -7,14 +7,16 @@ lambdas at runtime — are compiled into functions over a `DataFrame`. Unlike
 run at compile time, these specs can arrive from a GUI, a config file, or a
 database and be turned into working transforms on the fly.
 
-Extracted from [TermWin.jl](../TermWin), which uses it to power its interactive
-DataFrame tree/pivot viewer.
+Motivation:
+When developing [TermWin.jl], the dataframe view constantly needs to adjust and apply
+aggregation and pivoting (via static or on-the-fly dimensions) operations on the 
+tree/pivot viewer.  Abstraction of this layer is a natural extension of that need.
 
-Two pillars, one composition rule:
+At the core of this package there are two operator pillars, one composition rule:
 
-- **Aggregation** — reduce a group of rows to one value per column
+- **Aggregation** — operators that reduce a group of rows to one value per column
   (`liftAggrSpecToFunc`, `AggrHints`, `aggregate`).
-- **Dimensioning** — add NEW columns (existing data is never modified) whose
+- **Dimensioning** — operators that add NEW columns (existing data is never modified) whose
   values are computed from *sibling rows*: rows sharing the same partition-key
   values (`WindowDim`, `PivotDim`, `dim`).
 - **Composition** — *chains* declare dimensions inline in a pivot list,
@@ -29,12 +31,17 @@ using DataFrameAggrSpec, DataFrames, StatsBase
 df = DataFrame(TestScr = [1.0, 2, 3, 4], EnrlTot = [10.0, 20, 30, 40])
 
 # `:_` is the on-the-fly *target* column; `:EnrlTot` is a named column reference.
-# One spec can be reused across many target columns (shared weight, per-column mean).
+# One spec can be reused across many target columns (shared weight, per-column mean)
+# without typing and retyping their names.
+
 f = liftAggrSpecToFunc(:TestScr, :( StatsBase.mean(:_, StatsBase.Weights(:EnrlTot)) ))
 Base.invokelatest(f, df)          # weighted mean of TestScr
 
+#well known math functions can be named by just their name
 liftAggrSpecToFunc(:TestScr, :sum)            # bare Symbol → sum(df.TestScr)
-liftAggrSpecToFunc(:TestScr, :( quantile(:_, 0.75) ))
+
+#This package depends on the package Statistics so you can do this readily:
+liftAggrSpecToFunc(:TestScr, :( quantile(:_, 0.75) )) 
 ```
 
 Compiled functions are cached and evaluated at a fresh world-age, so call them via
@@ -97,14 +104,23 @@ out = pivottable(df, chain; hints)   # materialize dims, then aggregate over all
 df2 = dim(df, chain)                 # or: just add the columns, no aggregation
 ```
 
+(`aggregate` is the primitive — `pivottable` ≡ materialize the chain's
+dimensions, then `aggregate` over the full key list.)
+
+**The `by` rule**: `by` always means the grouping keys a dimension declares
+*itself*; a chain's left context layers on top — for a window dimension it is
+unioned into the partition, for a pivot dimension it becomes the outer
+`context`.
+
 - Bare `Expr`/`String` specs default to **window** kind; a top-level `topnames`
   call defaults to **pivot** kind. Everything else is explicit via
   `dimspec(ex; by = extra_grouping_keys, order = ..., kind = :window | :pivot)`.
 - A `Tuple` of pairs declares parallel **siblings**: same left context, not in
   each other's context —
   `[:region, (:share => ..., :cum => dimspec(...; order = :date))]`.
-- Pure runtime-string chains work for GUI/config paths:
-  `["County", ["top5d", "topnames(:District, :TestScr, 5)"], "District"]`.
+- Pure runtime-string chains work for GUI/config paths, and are parsed by the
+  UNTRUSTED whitelist grammar (bare identifiers = columns — see below):
+  `["County", ["top5d", "topnames(District, TestScr, 5)"], "District"]`.
 
 ## Pipelines
 
@@ -117,8 +133,66 @@ report = pivottable([:region, :quartile => :( discretize(:sales, quantiles = [.2
 df |> report                          # apply
 df |> dim([:region, :z => :( (:sales .- mean(:sales)) ./ std(:sales) )]) |> report
 (report ∘ dim([...]))(df)             # Base ∘ composes transforms
-df ∘ dim([...])                       # sugar: apply left-to-right
 ```
+
+## Untrusted specs (whitelist DSL)
+
+Everything above is the **trusted** DSL: specs are compiled with eval and must
+come from an author you trust. For TUI/GUI hosts that accept spec strings from
+*end users*, there is a separate sandboxed door — `aggr"..."` / `dim"..."`
+(string macros for Julia-side code) and `parseaggr(s)` / `parsedim(s)` (what a
+host calls on user input at runtime):
+
+```julia
+aggr"sum"                                 # bare registered name ≡ sum(_)
+aggr"quantile(_, 0.75)"
+aggr"sum(_ * wt) / sum(wt)"               # weighted mean, no registration needed
+dim"sales / sum(sales)"                   # share of group
+dim"topnames(District, TestScr, 5)"
+dim"discretize(TestScr, quantiles=[.25,.5,.75])"
+
+# they drop into every trusted slot:
+hints = AggrHints(:TestScr => aggr"sum(_ * EnrlTot) / sum(EnrlTot)")
+pivottable(df, [:County, :top5d => dim"topnames(District, TestScr, 5)"]; hints)
+dimspec(dim"cumsum(sales)"; order = :date)     # attach ordering / kind
+```
+
+Grammar (spreadsheet-flavored, default-deny):
+
+- bare identifier = **column** in every position (`District`, `wt`); `_` = the
+  target column (aggr specs only); `:sym` = a Symbol option value
+  (`boundedness = :boundedbelow`); literals: numbers, strings, `true`/`false`,
+  `[...]` arrays; kwargs in either `f(x, k = v)` or `f(x; k = v)` form.
+- arithmetic (`+ - * / ^`) and comparisons are whitelisted with **broadcast
+  semantics** — vector⊗scalar and vector⊗vector both work, no dots needed.
+- whitelisted operations only: reductions (`sum mean median std var quantile
+  minimum maximum count length first last …`), the package verbs (`topnames
+  discretize uniqvalue unionall lag lead`), `cumsum`/`cumprod`, and elementwise
+  math (`abs log exp sqrt round …`). `listops()` shows the registry; the full
+  reference lives in [docs/safe-aggregation-operators.md](docs/safe-aggregation-operators.md)
+  and [docs/safe-dimension-operators.md](docs/safe-dimension-operators.md).
+- everything else is rejected with a clear error: qualified names (`Core.eval`),
+  macros, interpolation, lambdas, indexing, blocks, comprehensions, splats.
+
+There is **no eval anywhere** on this path — specs compile to nested closures
+over a registry lookup, so results are plain functions (no `Base.invokelatest`
+needed) and safety does not depend on eval guards. Hosts extend the whitelist
+deliberately, in code:
+
+```julia
+registerop!(:double, x -> 2 .* x)              # dim"double(sales)"
+using StatsBase; registerop!(:Weights, Weights)
+aggr"mean(_, Weights(EnrlTot))"                # mean is already registered;
+                                               # dispatch does the rest
+
+# custom classifier verbs (pivot kind, like topnames) declare which argument
+# carries their grouping key(s):
+registerop!(:tophalf, (name, measure) -> ...)
+registerclassifier!(:tophalf, 1)               # dim"tophalf(District, TestScr)"
+```
+
+One wrinkle of "bare identifier = column": `missing`, `pi`, `Inf` are
+identifiers, hence column references, not constants.
 
 ## Presentation verbs
 
@@ -146,8 +220,19 @@ the cache. `Dimension(name, cp::CalcPivot)` converts.
 
 ## Trust boundary
 
-General spec expressions are compiled with `Core.eval(Main, …)` so that
+**The rule: `Expr` / `Symbol` / `Function` specs are trusted; plain `String`s
+are untrusted** — parsed by the safe whitelist grammar everywhere in the API
+(the only exception is the deprecated legacy `CalcPivot(::String)` constructor,
+frozen for old configs). Strings are the one spec form that can arrive from a
+user's text field by accident, so they can never reach eval.
+
+Trusted `Expr` specs are compiled with `Core.eval(Main, …)` so that
 module-qualified names (`StatsBase.mean`) resolve against your loaded packages.
 The guards (must be a `:call`, no curly type-params, simple/dotted names only,
-reject any `!`) make this safe for **specs you author** (config you control) but
-are **not a sandbox** — do not feed untrusted user input to these functions.
+reject any `!`) make this safe for **specs you author** but are **not a
+sandbox** — the sandbox is the String/untrusted path.
+
+**The colon flip mnemonic** (crossing the boundary): the colon marks the
+exception. In trusted Exprs everything is Julia, so *columns* need the colon
+(`:( sum(:sales) )`); in untrusted strings everything is a column, so *symbol
+literals* need the colon (`"discretize(x, [0], boundedness = :boundedbelow)"`).

@@ -605,3 +605,75 @@ function lead(v::AbstractVector, n::Integer = 1; default = missing)
     len = length(v)
     [i + n <= len ? v[i+n] : default for i = 1:len]
 end
+
+# strjoinuniq: the unique non-missing values as strings, sorted and joined with
+# `sep`, capped at `limit` characters (a trailing "…" marks truncation).
+# Intended for concise group displays, e.g. the districts inside a county cell.
+function strjoinuniq(x::AbstractVector, sep::AbstractString = ",", limit::Integer = 128)
+    vals = sort!(unique(string(v) for v in skipmissing(x)))
+    s = join(vals, sep)
+    length(s) <= limit ? s : first(s, max(limit - 1, 0)) * "…"
+end
+
+# percent label for a quantile boundary: 0.25 -> "25%", 0.125 -> "12.5%"
+function pctstr(x::Real)
+    v = x * 100
+    r = round(v)
+    (abs(v - r) < 1e-9 ? string(Int(r)) : string(v)) * "%"
+end
+
+# quantiles: label each element by the quantile bucket it falls into, with the
+# thresholds computed from the vector itself. `qs` are the INNER boundaries --
+# 0 and 1 are implied, so qs = [.25, .5, .75] yields four buckets:
+#   1. [0%, 25%)   2. [25%, 50%)   3. [50%, 75%)   4. [75%, 100%]
+# (leftequal = false flips to "[0%, 25%]", "(25%, 50%]", ...). `prefix` /
+# `suffix` decorate the interval: "1. <prefix> [0%, 25%) <suffix>".
+# In a dim spec this verb is pivot-kind like topnames:
+#   dim"quantiles(TestScr, [.25,.5,.75], [District])"
+# groups by District, aggregates TestScr per district (per AggrHints), and
+# buckets the districts. The 3rd argument declares that grouping granularity;
+# its value is ignored here.
+function quantiles(
+    measure::AbstractVector,
+    qs::AbstractVector{<:Real},
+    groupcols = nothing;
+    leftequal::Bool = true,
+    prefix::AbstractString = "",
+    suffix::AbstractString = "",
+)
+    isempty(qs) && error("quantiles: need at least one quantile boundary")
+    all(diff(collect(Float64, qs)) .> 0) ||
+        error("quantiles: boundaries must be strictly increasing")
+    (first(qs) > 0.0 && last(qs) < 1.0) ||
+        error("quantiles: boundaries must be strictly inside (0, 1) -- 0 and 1 are implied")
+
+    n = length(qs) + 1
+    bounds = [0.0; collect(Float64, qs); 1.0]
+    rankwidth = length(string(n))
+    pool = Vector{String}(undef, n)
+    for i = 1:n
+        lo = pctstr(bounds[i])
+        hi = pctstr(bounds[i+1])
+        iv = if leftequal
+            i == n ? "[" * lo * ", " * hi * "]" : "[" * lo * ", " * hi * ")"
+        else
+            i == 1 ? "[" * lo * ", " * hi * "]" : "(" * lo * ", " * hi * "]"
+        end
+        pool[i] =
+            format(i, width = rankwidth) * ". " *
+            (isempty(prefix) ? "" : prefix * " ") * iv *
+            (isempty(suffix) ? "" : " " * suffix)
+    end
+
+    clean = collect(skipmissing(measure))
+    if isempty(clean)
+        return CategoricalArray(Union{Missing,String}[missing for _ in measure])
+    end
+    thr = quantile(clean, collect(Float64, qs))
+    labels = Union{Missing,String}[
+        ismissing(v) ? missing :
+        pool[leftequal ? searchsortedlast(thr, v) + 1 : max(searchsortedfirst(thr, v), 1)]
+        for v in measure
+    ]
+    CategoricalArray(labels)
+end

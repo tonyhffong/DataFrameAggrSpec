@@ -10,6 +10,15 @@ using Test
     @testset "AggrHints + aggregate" begin
         include("hints.jl")
     end
+    @testset "untrusted safe DSL" begin
+        include("safe.jl")
+    end
+    @testset "safe aggregation operators" begin
+        include("safe-aggr.jl")
+    end
+    @testset "safe dimension operators" begin
+        include("safe-dim.jl")
+    end
     @testset "window dimensions" begin
         include("dimensions.jl")
     end
