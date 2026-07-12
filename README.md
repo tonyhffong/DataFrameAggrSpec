@@ -121,6 +121,21 @@ unioned into the partition, for a pivot dimension it becomes the outer
 - Pure runtime-string chains work for GUI/config paths, and are parsed by the
   UNTRUSTED whitelist grammar (bare identifiers = columns — see below):
   `["County", ["top5d", "topnames(District, TestScr, 5)"], "District"]`.
+- **Trusted and untrusted dims interlace freely** in one chain — each entry is
+  resolved independently, so host-authored `Expr` dims compose with user-typed
+  `dim"..."` dims (the intended TUI pattern):
+
+  ```julia
+  [:County,
+   :top1 => dim"topnames(District, TestScr, 1)",       # from a user text field
+   (:share => :( :TestScr ./ sum(:TestScr) ),          # trusted, host-authored
+    :cum   => dimspec(dim"cumsum(EnrlTot)"; order = :TestScr))]
+  ```
+
+  The left context applies across the mix: every declared dimension scopes
+  everything to its right, so keep continuous dims (z-scores, shares) out of
+  the context of later ones — sibling tuples, as above, share a context
+  without scoping each other.
 
 ## Pipelines
 

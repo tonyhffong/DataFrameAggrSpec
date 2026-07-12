@@ -91,3 +91,43 @@ end
     df4 = dim(df, ["County", ["top1", "topnames(District, TestScr, 1)"]])
     @test string.(df4.top1) == string.(df2.top1)
 end
+
+@testset "interlacing trusted and untrusted dims in one chain" begin
+    df = DataFrame(
+        County = ["C1", "C1", "C1", "C1", "C2", "C2"],
+        District = ["d1", "d1", "d2", "d3", "d4", "d5"],
+        TestScr = [10.0, 20.0, 50.0, 30.0, 40.0, 10.0],
+        EnrlTot = [100, 100, 50, 30, 80, 20],
+    )
+
+    # a safe (user-typed) pivot dim, then a sibling tuple mixing a trusted Expr
+    # window dim with a safe+ordered one -- all under the same left context
+    chain = [:County,
+             :top1 => dim"topnames(District, TestScr, 1)",
+             (:share => :( :TestScr ./ sum(:TestScr) ),
+              :cum   => dimspec(dim"cumsum(EnrlTot)"; order = :TestScr))]
+
+    keycols, dims = normalize_chain(chain)
+    @test keycols == [:County, :top1, :share, :cum]
+    @test dims[1] isa PivotDim && dims[1].spec isa SafeDimSpec
+    @test dims[2] isa WindowDim && dims[2].spec isa Expr
+    @test dims[3] isa WindowDim && dims[3].spec isa SafeDimSpec
+    # siblings share the context without scoping each other
+    @test dims[2].by == [:County, :top1]
+    @test dims[3].by == [:County, :top1]
+
+    dfm = dim(df, chain)
+    # partitions by (County, top1): C1-Others = rows 1,2,4 ; singletons elsewhere
+    @test dfm.share ≈ [10 / 60, 20 / 60, 1.0, 30 / 60, 1.0, 1.0]
+    @test dfm.cum == [100, 200, 50, 230, 80, 20]
+
+    # pivottable over a mixed chain: trusted flag under a safe pivot key
+    out = pivottable(df, [:County,
+                          :top1 => dim"topnames(District, TestScr, 1)",
+                          :flag => :( :TestScr .> 25.0 )];
+                     hints = AggrHints(:TestScr => :sum))
+    @test nrow(out) == 5
+    c1of = out[(out.County .== "C1") .& (string.(out.top1) .== "Others") .&
+               .!out.flag, :]
+    @test c1of.TestScr == [30.0]   # rows 1,2 (TestScr 10 + 20)
+end
