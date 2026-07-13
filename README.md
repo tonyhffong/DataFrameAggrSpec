@@ -99,14 +99,22 @@ statistics.
 
 More chain forms:
 
-- A `Tuple` of pairs declares parallel **siblings**: same left context, not in
-  each other's context —
-  `[:region, (:share => dim"sales / sum(sales)", :cum => dim"cumsum(sales) |> orderby(date)")]`.
+- **A chain declares pivot levels only** — every entry joins the left context
+  and the key list. Side measures (shares, cumsums, z-scores) are deliberately
+  *not expressible inside a chain*: they would poison the grouping of
+  everything to their right. Compute them as **separate statements**, each
+  rebuilding its context explicitly:
+
+  ```julia
+  df |> dim([:region, :share => dim"sales / sum(sales)"],
+            [:region, :cum   => dim"cumsum(sales) |> orderby(date)"]) |>
+        pivottable([:region, :bucket => dim"quantiles(sales, [.5], [])"]; hints)
+  ```
+
+  The syntax forces the distinction: if it's in a chain, it's a key; if it's a
+  measure, it gets its own statement.
 - Pure runtime-string chains work for GUI/config paths:
   `["County", ["top5d", "topnames(District, TestScr, 5)"], "District"]`.
-- Every declared dimension scopes everything to its right, so keep continuous
-  dims (shares, z-scores) out of the context of later ones — sibling tuples
-  share a context without scoping each other.
 
 ## Aggregation
 
@@ -215,15 +223,14 @@ dim(df, [:region, :share => :( :sales ./ sum(:sales) )])
 :( discretize(:x, [0, 1]; boundedness = ^(:boundedbelow)) )
 ```
 
-Trusted and safe specs interlace freely in one chain — each entry is resolved
+Trusted and safe specs interlace freely — each chain entry is resolved
 independently, so host-authored `Expr` dims compose with user-typed `dim"..."`
-dims (the intended TUI pattern):
+dims (the intended TUI pattern), and measure statements mix trust the same way:
 
 ```julia
-[:County,
- :top1 => dim"topnames(District, TestScr, 1)",       # from a user text field
- (:share => :( :TestScr ./ sum(:TestScr) ),          # trusted, host-authored
-  :cum   => dimspec(dim"cumsum(EnrlTot)"; order = :TestScr))]
+dim(df, [:County, :top1 => dim"topnames(District, TestScr, 1)"],   # user-typed key
+        [:County, :top1, :share => :( :TestScr ./ sum(:TestScr) )], # trusted measure
+        [:County, :top1, :cum => dim"cumsum(EnrlTot) |> orderby(TestScr)"])
 ```
 
 **The two dimension kinds.** Under the hood every dimension evaluates in one of

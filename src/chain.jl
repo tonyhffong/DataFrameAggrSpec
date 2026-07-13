@@ -10,11 +10,15 @@
 # Entry forms:
 #   Symbol / String                       -- existing column (pivot key)
 #   name => spec  or  [name, spec]        -- declare a dimension (String-friendly)
-#   (name => spec, name => spec, ...)     -- parallel siblings: same left context,
-#                                            not in each other's context
 #   an AbstractDimension                  -- used as-is; its name joins the context
 #   spec: Expr / String / Function, or dimspec(...) to attach order / extra
 #   grouping keys ("addgroupby") / an explicit kind.
+#
+# A chain declares PIVOT LEVELS only -- every entry joins the left context and
+# the key list. Side measures (shares, cumsums, z-scores) are deliberately NOT
+# expressible inside a chain: compute them as separate statements, each
+# rebuilding its context explicitly --
+#   dim(df, [context..., :m1 => spec], [context..., :m2 => spec])
 
 # name-less dimension spec, named when it lands in a chain
 struct DimSpec
@@ -101,7 +105,7 @@ end
 
 # normalize_chain: resolve a chain into pivot keys (in order) and the concrete
 # dimensions to materialize (in application order)
-function normalize_chain(chain::Union{AbstractVector,Tuple})
+function normalize_chain(chain::AbstractVector)
     keycols = Symbol[]
     dims = AbstractDimension[]
     for entry in chain
@@ -125,17 +129,12 @@ function chainentry!(keycols::Vector{Symbol}, dims::Vector{AbstractDimension}, e
     elseif isa(entry, AbstractDimension)
         push!(dims, entry)
         push!(keycols, entry.name)
-    elseif isa(entry, Tuple)   # parallel siblings under the same left context
-        ctx = copy(keycols)
-        names = Symbol[]
-        for e in entry
-            isdeclaration(e) ||
-                error("chain: sibling entries must be name => spec pairs, got " * string(e))
-            (n, payload) = declaration(e)
-            push!(dims, chain_dim(n, payload, ctx))
-            push!(names, n)
-        end
-        append!(keycols, names)
+    elseif isa(entry, Tuple)
+        error(
+            "chain: sibling tuples were removed -- a chain declares pivot " *
+            "levels only; compute side measures as separate statements, e.g. " *
+            "dim(df, [context..., :m1 => spec], [context..., :m2 => spec])",
+        )
     elseif isdeclaration(entry)
         (n, payload) = declaration(entry)
         push!(dims, chain_dim(n, payload, copy(keycols)))

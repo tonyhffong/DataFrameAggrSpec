@@ -35,13 +35,22 @@ import DataFrameAggrSpec: normalize_chain, WindowDim, PivotDim, dependencies   #
     @test dims2[1] isa PivotDim
     @test dims2[1].context == [:County]
 
-    # sibling tuple: same context, not in each other's context
-    keycols3, dims3 = normalize_chain(
-        [:region, (:share => :( :sales ./ sum(:sales) ),
-                   :cum => dimspec(:( cumsum(:sales) ), order = :date))])
-    @test keycols3 == [:region, :share, :cum]
-    @test dims3[1].by == [:region] && dims3[2].by == [:region]
-    @test dims3[2].order == [:date => false]
+    # sibling tuples were removed: a chain declares pivot levels only
+    err3 = try
+        normalize_chain([:region, (:share => :( :sales ./ sum(:sales) ),
+                                   :cum => :( cumsum(:sales) ))])
+        nothing
+    catch e
+        e
+    end
+    @test err3 isa ErrorException && occursin("separate statements", err3.msg)
+
+    # the blessed pattern: side measures as separate chains, each rebuilding
+    # its context explicitly -- neither is in the other's context or keycols
+    kA, dA = normalize_chain([:region, :share => :( :sales ./ sum(:sales) )])
+    kB, dB = normalize_chain([:region, :cum => dimspec(:( cumsum(:sales) ), order = :date)])
+    @test dA[1].by == [:region] && dB[1].by == [:region]
+    @test dB[1].order == [:date => false]
 
     # dimspec: explicit kind + extra grouping keys ("addgroupby")
     keycols4, dims4 = normalize_chain(
@@ -122,23 +131,21 @@ end
         EnrlTot = [100, 100, 50, 30, 80, 20],
     )
 
-    # a safe (user-typed) pivot dim, then a sibling tuple mixing a trusted Expr
-    # window dim with a safe+ordered one -- all under the same left context
-    chain = [:County,
-             :top1 => dim"topnames(District, TestScr, 1)",
-             (:share => :( :TestScr ./ sum(:TestScr) ),
-              :cum   => dimspec(dim"cumsum(EnrlTot)"; order = :TestScr))]
-
-    keycols, dims = normalize_chain(chain)
-    @test keycols == [:County, :top1, :share, :cum]
+    # a safe (user-typed) pivot dim, then measures as SEPARATE chains mixing a
+    # trusted Expr window dim with a safe+ordered one -- each rebuilds the
+    # (County, top1) context explicitly
+    keychain = [:County, :top1 => dim"topnames(District, TestScr, 1)"]
+    keycols, dims = normalize_chain(keychain)
+    @test keycols == [:County, :top1]
     @test dims[1] isa PivotDim && dims[1].spec isa SafeDimSpec
-    @test dims[2] isa WindowDim && dims[2].spec isa Expr
-    @test dims[3] isa WindowDim && dims[3].spec isa SafeDimSpec
-    # siblings share the context without scoping each other
-    @test dims[2].by == [:County, :top1]
-    @test dims[3].by == [:County, :top1]
 
-    dfm = dim(df, chain)
+    dfm = dim(df, keychain,
+              [:County, :top1, :share => :( :TestScr ./ sum(:TestScr) )],
+              [:County, :top1, :cum => dim"cumsum(EnrlTot) |> orderby(TestScr)"])
+    (_, dshare) = normalize_chain([:County, :top1, :share => :( :TestScr ./ sum(:TestScr) )])
+    @test dshare[1] isa WindowDim && dshare[1].spec isa Expr
+    @test dshare[1].by == [:County, :top1]
+
     # partitions by (County, top1): C1-Others = rows 1,2,4 ; singletons elsewhere
     @test dfm.share ≈ [10 / 60, 20 / 60, 1.0, 30 / 60, 1.0, 1.0]
     @test dfm.cum == [100, 200, 50, 230, 80, 20]

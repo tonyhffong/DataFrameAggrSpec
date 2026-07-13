@@ -24,7 +24,7 @@ aggregate(df::AbstractDataFrame, keycol::Symbol; kwargs...) =
 # on-the-fly-dimensions. The non-UI core of TermWin's pivot tree.
 function pivottable(
     df::AbstractDataFrame,
-    chain::Union{AbstractVector,Tuple};
+    chain::AbstractVector;
     hints::AggrHints = AggrHints(),
 )
     keycols, dims = normalize_chain(chain)
@@ -48,7 +48,7 @@ end
 (t::DimTransform)(df::AbstractDataFrame) =
     dim(df, t.specs...; hints = t.hints, replace = t.replace)
 
-dim(chains::Union{Pair,AbstractVector,Tuple}...; hints::AggrHints = AggrHints(),
+dim(chains::Union{Pair,AbstractVector}...; hints::AggrHints = AggrHints(),
     replace::Bool = false) = DimTransform(chains, hints, replace)
 
 struct PivotTransform
@@ -57,5 +57,5 @@ struct PivotTransform
 end
 (t::PivotTransform)(df::AbstractDataFrame) = pivottable(df, t.chain; hints = t.hints)
 
-pivottable(chain::Union{AbstractVector,Tuple,Symbol}; hints::AggrHints = AggrHints()) =
+pivottable(chain::Union{AbstractVector,Symbol}; hints::AggrHints = AggrHints()) =
     PivotTransform(chain, hints)

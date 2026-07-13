@@ -380,7 +380,7 @@ copyframe(df::AbstractDataFrame) = DataFrame(df)   # SubDataFrame etc.
 # (SubDataFrame-friendly) so the input frame is never touched.
 function dim!(
     df::DataFrame,
-    chains::Union{Pair,AbstractVector,Tuple}...;
+    chains::Union{Pair,AbstractVector}...;
     hints::AggrHints = AggrHints(),
     replace::Bool = false,
 )
