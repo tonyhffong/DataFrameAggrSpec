@@ -84,6 +84,16 @@ function WindowDim(
         refs = referenced_columns(spec)
     elseif isa(spec, SafeDimSpec)
         refs = copy(spec.cols)
+        if !isempty(spec.order)   # from a peeled `... |> orderby(cols...)`
+            if isempty(normalize_order(order))
+                order = spec.order
+            else
+                error(
+                    "WindowDim " * string(name) * ": order given both in the " *
+                    "spec string (orderby) and via dimspec/order",
+                )
+            end
+        end
     end
     WindowDim(name, spec, tosyms(by), normalize_order(order), refs)
 end
@@ -238,6 +248,10 @@ function PivotDim(
         spec = parsedim(spec)   # Strings are UNTRUSTED: safe whitelist grammar
     end
     if isa(spec, SafeDimSpec)
+        isempty(spec.order) || error(
+            "PivotDim " * string(name) * ": orderby applies to window " *
+            "dimensions; pivot kind classifies group aggregates",
+        )
         fname = spec.fname
         refs = copy(spec.cols)
     else

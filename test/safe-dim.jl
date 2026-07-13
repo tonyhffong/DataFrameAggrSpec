@@ -104,6 +104,38 @@ end
     @test_throws ErrorException PivotDim(:bad, dim"quantiles(TestScr, [.5], District)")
 end
 
+@testset "orderby modifier (behavior)" begin
+    df = DataFrame(region = ["E", "E", "W", "W", "W"],
+                   date   = [1, 2, 1, 2, 3],
+                   sales  = [10.0, 20.0, 5.0, 15.0, 30.0])
+
+    # in-string orderby ≡ dimspec(...; order = ...)
+    a = dim(df, [:region, :cum => dim"cumsum(sales) |> orderby(date)"])
+    b = dim(df, [:region, :cum => dimspec(dim"cumsum(sales)"; order = :date)])
+    @test a.cum == b.cum == [10.0, 30.0, 5.0, 20.0, 50.0]
+
+    # ∘ spelling + descending direction
+    c = dim(df, [:region, :cum2 => dim"cumsum(sales) ∘ orderby(date => :desc)"])
+    @test c.cum2 == [30.0, 20.0, 50.0, 45.0, 30.0]
+
+    # THE motivating case: ordering expressible from a pure-string config chain
+    d = dim(df, ["region", ["cum", "cumsum(sales) |> orderby(date)"]])
+    @test d.cum == a.cum
+
+    # conflict between in-string orderby and dimspec order is an error
+    @test_throws ErrorException dim(df, [:region,
+        :x => dimspec(dim"cumsum(sales) |> orderby(date)"; order = :sales)])
+
+    # pivot kind rejects orderby (classifies group aggregates; nothing to sort)
+    @test_throws ErrorException DataFrameAggrSpec.normalize_chain(
+        [:bad => dim"topnames(region, sales, 2) |> orderby(date)"])
+
+    # the orderby columns count as dependencies
+    (_, dims) = DataFrameAggrSpec.normalize_chain(
+        [:region, :cum => dim"cumsum(sales) |> orderby(date)"])
+    @test dependencies(dims[1]) == [:sales, :date]
+end
+
 @testset "quantiles with empty grouping = row-level window" begin
     # an empty (or omitted) 3rd argument ranks rows INDIVIDUALLY into buckets
     df0 = DataFrame(x = [1.0, 2.0, 3.0, 4.0])

@@ -7,10 +7,15 @@ lambdas at runtime — are compiled into functions over a `DataFrame`. Unlike
 run at compile time, these specs can arrive from a GUI, a config file, or a
 database and be turned into working transforms on the fly.
 
-Motivation:
-When developing [TermWin.jl], the dataframe view constantly needs to adjust and apply
-aggregation and pivoting (via static or on-the-fly dimensions) operations on the 
-tree/pivot viewer.  Abstraction of this layer is a natural extension of that need.
+When developing an intuition about a dataframe, a user constantly needs to adjust and apply
+aggregation and pivoting (via static or on-the-fly dimensions) operations.
+- What are the "top" categories given a measures? e.g. top scoring schools in a state.
+- Within a smaller context, what are the "top" categories then? e.g. top scoring schools within each country
+- What if I change the definition of "scores"?
+We want to easily change our queries without rewriting many lines of code,
+even better if we can change this via a GUI/TUI with one action.
+
+Abstraction of this layer is a natural extension of that need.
 
 At the core of this package there are two operator pillars, one composition rule:
 
@@ -52,7 +57,7 @@ dim(df, [:region, :share => dim"sales / sum(sales)"])
 #  ...
 
 # running total within each region, accumulated in date order
-dim(df, [:region, :cum => dimspec(dim"cumsum(sales)"; order = :date)])
+dim(df, [:region, :cum => dim"cumsum(sales) |> orderby(date)"])
 
 # label every row by its REGION's rank on total sales ("1. W", "2. E") --
 # the groups are ranked, and each member row receives its group's label
@@ -63,20 +68,23 @@ dim(df, [:q => dim"quantiles(sales, [.25, .5], [])"])
 ```
 
 `dim` returns a new frame (the input is untouched); `dim!` adds the columns in
-place. `dimspec(spec; order = ...)` wraps a spec to attach an ordering (more
-options later). The available operations are listed in
+place. `spec |> orderby(cols...)` attaches an ordering to a spec (intent first,
+modifier after — `∘` is the pretty synonym, `orderby(date => :desc)` for
+direction; the modifier is metadata for the engine, never a function call).
+The available operations are listed in
 [docs/safe-dimension-operators.md](docs/safe-dimension-operators.md).
 
 ### Chains: dimensions become pivot keys
 
-The vector passed to `dim` is a **chain** — an ordered pivot list. `Symbol`s
+The astute reader would have noticed that the `dim` always takes a vector in
+the second argument. The vector is a **chain** — an ordered pivot list. `Symbol`s
 name existing columns; `name => spec` declares a new dimension. The rule that
 makes chains compose: **a dimension's grouping is everything to its left in
 the chain** (its *left context*), and once declared, the dimension is
 immediately usable as a key by everything to its right:
 
 ```julia
-chain = [:County,
+chain = [:County, #existing column, Country
          :top5d  => dim"topnames(District, TestScr, 5)",   # per County, rank Districts
          :District,
          :scoreq => dim"discretize(TestScr, quantiles = [.25, .5, .75])"]
@@ -86,12 +94,14 @@ df2 = dim(df, chain)                 # just add the columns
 out = pivottable(df, chain; hints)   # or: materialize dims, then aggregate one
                                      # row per key combination (hints: see below)
 ```
+In the above example, by removing the first element `:County` the result becomes a state level
+statistics. 
 
 More chain forms:
 
 - A `Tuple` of pairs declares parallel **siblings**: same left context, not in
   each other's context —
-  `[:region, (:share => dim"sales / sum(sales)", :cum => dimspec(dim"cumsum(sales)"; order = :date))]`.
+  `[:region, (:share => dim"sales / sum(sales)", :cum => dim"cumsum(sales) |> orderby(date)")]`.
 - Pure runtime-string chains work for GUI/config paths:
   `["County", ["top5d", "topnames(District, TestScr, 5)"], "District"]`.
 - Every declared dimension scopes everything to its right, so keep continuous
@@ -159,6 +169,9 @@ macros are compile-time sugar for the same thing).
   `cumsum`/`cumprod`, and elementwise math (`abs log exp sqrt round …`).
   `listops()` shows the registry; the full reference lives in the two
   [docs/](docs/) operator documents.
+- a top-level `spec ∘ orderby(cols...)` / `spec |> orderby(cols...)` attaches
+  an ordering **modifier** — peeled structurally as engine metadata, never
+  called (dim specs only; `orderby` is a reserved name).
 - everything else is rejected with a clear error: qualified names (`Core.eval`),
   macros, interpolation, lambdas, indexing, blocks, comprehensions, splats.
 - one wrinkle of "bare identifier = column": `missing`, `pi`, `Inf` are
@@ -231,7 +244,9 @@ construct:
   `registerclassifier!`); force it with `dimspec(...; kind = :pivot)`.
 
 `dimspec(ex; by = extra_grouping_keys, order = ..., kind = :window | :pivot)`
-is the full options carrier. **The `by` rule**: `by` always means the grouping
+is the full options carrier — the Julia-side equivalent of the in-string
+`|> orderby(...)` modifier (specifying both is an error, not a precedence
+game). **The `by` rule**: `by` always means the grouping
 keys a dimension declares *itself*; a chain's left context layers on top — for
 a window dimension it is unioned into the partition, for a pivot dimension it
 becomes the outer context.

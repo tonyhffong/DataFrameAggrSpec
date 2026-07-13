@@ -48,6 +48,43 @@ import DataFrameAggrSpec: WindowDim, PivotDim, dependencies   # internals, white
     # per-operator behavior tests live in test/safe-aggr.jl / test/safe-dim.jl
 end
 
+@testset "orderby modifier (parse level)" begin
+    # intent first, modifier after; ∘ and |> are synonyms
+    s1 = dim"cumsum(sales) ∘ orderby(date)"
+    s2 = dim"cumsum(sales) |> orderby(date)"
+    @test s1.order == [:date => false]
+    @test s2.order == [:date => false]
+    @test s1.fname == :cumsum && s1.cols == [:sales]   # metadata = the INNER spec
+    @test s2.f([1, 2, 3]) == [1, 3, 6]                 # kernel = the inner spec
+
+    # direction and multi-key forms
+    @test dim"lag(sales) |> orderby(date => :desc)".order == [:date => true]
+    @test dim"cumsum(sales) |> orderby(region, date)".order ==
+          [:region => false, :date => false]
+
+    modreject(f, s, needle) = begin
+        err = try
+            f(s)
+            nothing
+        catch e
+            e
+        end
+        err isa ErrorException && occursin(needle, err.msg)
+    end
+    @test modreject(parsedim, "cumsum(sales) |> orderby(date) |> orderby(x)",
+                    "duplicate orderby")
+    @test modreject(parsedim, "orderby(date) |> cumsum(sales)",
+                    "must follow the spec")
+    @test modreject(parsedim, "cumsum(sales) |> orderby()",
+                    "at least one column")
+    @test modreject(parsedim, "cumsum(sales) |> foo(x)",
+                    "expected a modifier call")
+    @test modreject(parsedim, "sum(a |> b)", "unknown function")   # nested, not peeled
+    @test modreject(parseaggr, "sum(_) |> orderby(date)",
+                    "dimension-spec features")
+    @test_throws ErrorException registerop!(:orderby, identity)   # reserved name
+end
+
 @testset "rejection matrix" begin
     reject(s, needle) = begin
         err = try

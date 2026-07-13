@@ -22,12 +22,21 @@
 
 const SafeOps = Dict{Symbol,Base.Callable}()   # Callable: constructors (Weights) too
 
+# postfix MODIFIER names: `spec ∘ orderby(cols...)` / `spec |> orderby(cols...)`
+# attach engine metadata to a dim spec. Modifiers are peeled structurally at
+# parse time (peel_modifiers) and are never called -- reserve their names so a
+# host cannot shadow them with registerop!.
+const SafeModifiers = (:orderby,)
+
 # extension is a trusted act done in host code, never via spec strings
 function registerop!(name::Symbol, f::Base.Callable)
     s = string(name)
     if occursin(".", s) || occursin("!", s)
         error("registerop!: operator names may not contain '.' or '!', got '" * s *
               "' (alias the function under a clean name instead)")
+    end
+    if in(name, SafeModifiers)
+        error("registerop!: '" * s * "' is a reserved modifier name")
     end
     SafeOps[name] = f
 end
@@ -105,8 +114,10 @@ struct SafeDimSpec
     f::Function
     cols::Vector{Symbol}   # :_ forbidden (checked at parse)
     posargs::Vector{Any}   # simplified top-level positional args: Symbol (bare
-end                        # column), Vector{Symbol} ([col, ...] array), else
+                           # column), Vector{Symbol} ([col, ...] array), else
                            # nothing -- feeds pivot_groupkeys (topnames/quantiles)
+    order::Vector{Pair{Symbol,Bool}}  # from a peeled `... |> orderby(cols...)`
+end                                   # modifier; consumed by WindowDim
 
 Base.:(==)(a::SafeAggrSpec, b::SafeAggrSpec) = a.source == b.source
 Base.hash(a::SafeAggrSpec, h::UInt) = hash((:SafeAggrSpec, a.source), h)
@@ -249,6 +260,38 @@ simple_posarg(a) =
     Base.Meta.isexpr(a, :vect) && all(x -> isa(x, Symbol), a.args) ?
     Symbol[a.args...] : nothing
 
+ismodifiercall(x) = Base.Meta.isexpr(x, :call) && in(x.args[1], SafeModifiers)
+ismodifiershape(ex) =
+    Base.Meta.isexpr(ex, :call, 3) && (ex.args[1] == :∘ || ex.args[1] == :|>)
+
+# peel postfix modifiers off a dim spec: `spec ∘ orderby(cols...)` (or `|>`,
+# the ASCII twin). Intent first, modifier after; the modifier is engine
+# METADATA -- interpreted structurally, never called. Returns (inner, order).
+function peel_modifiers(ex, what::String)
+    order = Pair{Symbol,Bool}[]
+    while ismodifiershape(ex)
+        combinator, lhs, rhs = ex.args[1], ex.args[2], ex.args[3]
+        if ismodifiercall(lhs)
+            error(what * ": the modifier must follow the spec -- write " *
+                  "\"spec " * string(combinator) * " " *
+                  string(lhs.args[1]) * "(...)\"")
+        end
+        if !ismodifiercall(rhs)
+            error(what * ": expected a modifier call (" *
+                  join(string.(SafeModifiers), ", ") * ") after '" *
+                  string(combinator) * "', got " * string(rhs))
+        end
+        isempty(order) || error(what * ": duplicate orderby modifier")
+        args = rhs.args[2:end]
+        isempty(args) && error(what * ": orderby needs at least one column")
+        for a in args
+            push!(order, orderentry_parsed(a))   # :col | col => :asc/:desc
+        end
+        ex = lhs
+    end
+    (ex, order)
+end
+
 # repeated parses of the same string return the identical spec object
 const SafeSpecCache = Dict{Tuple{Symbol,String},Any}()
 
@@ -256,6 +299,10 @@ function parseaggr(s::AbstractString)
     src = String(strip(s))
     get!(SafeSpecCache, (:aggr, src)) do
         ex = safe_parse(src, "parseaggr")
+        if ismodifiershape(ex) && (ismodifiercall(ex.args[2]) || ismodifiercall(ex.args[3]))
+            error("parseaggr: modifiers (orderby) are dimension-spec features; " *
+                  "aggregation specs do not support them")
+        end
         if isa(ex, Symbol)                   # aggr"sum" -- bare registered name
             haskey(SafeOps, ex) ||
                 error("parseaggr: unknown function '" * string(ex) *
@@ -276,6 +323,7 @@ function parsedim(s::AbstractString)
     src = String(strip(s))
     get!(SafeSpecCache, (:dim, src)) do
         ex = safe_parse(src, "parsedim")
+        (ex, order) = peel_modifiers(ex, "parsedim")
         isa(ex, Expr) && ex.head == :call ||
             error("parsedim: spec must be a function call (e.g. \"cumsum(sales)\"), got \"" *
                   src * "\"")
@@ -285,7 +333,7 @@ function parsedim(s::AbstractString)
             error("parsedim: '_' is the aggregation target placeholder and has " *
                   "no meaning in a dim spec")
         posargs = Any[simple_posarg(a) for a in positional_args(ex)]
-        SafeDimSpec(src, ex.args[1], (vs...) -> thunk(vs), cols, posargs)
+        SafeDimSpec(src, ex.args[1], (vs...) -> thunk(vs), cols, posargs, order)
     end::SafeDimSpec
 end
 

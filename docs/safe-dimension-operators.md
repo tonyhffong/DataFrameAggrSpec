@@ -60,6 +60,24 @@ to window. Force the kind (and attach ordering or extra grouping keys) with
 Results are scattered back through the inverse sort permutation, so the new
 column stays aligned with the original row order.
 
+### The `orderby` modifier
+
+Ordering attaches to a spec with a postfix **modifier** — intent first:
+
+```julia
+dim"cumsum(sales) |> orderby(date)"            # ascending
+dim"cumsum(sales) ∘ orderby(date)"             # ∘ is a synonym for |>
+dim"lag(sales) |> orderby(date => :desc)"      # direction
+dim"cumsum(sales) |> orderby(region, date)"    # multi-key
+```
+
+The modifier is engine metadata, never a function call: the partition is
+sorted, the operator runs over the sorted vectors, and results scatter back to
+the original rows. One `orderby` per spec; window kind only (pivot dimensions
+classify group aggregates — there is nothing to sort); `orderby` is a reserved
+name that `registerop!` will refuse. The Julia-side equivalent is
+`dimspec(spec; order = ...)` — specifying both is an error.
+
 ## Group-relative measures (window kind)
 
 Reductions return a scalar per partition; arithmetic broadcasts it back across
