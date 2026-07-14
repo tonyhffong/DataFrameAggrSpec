@@ -42,7 +42,7 @@ to window. Force the kind (and attach ordering or extra grouping keys) with
 |---|---|---|
 | `topnames` | top-N labels `"1. name"`, ties via `dense`, rest bucketed as `others`; kwargs `absolute`, `ranksep`, `dense`, `tol`, `others`, `parens` | `dim"topnames(District, TestScr, 5)"` |
 | `discretize` | bin numbers into ranked `CategoricalArray` labels; break form `discretize(x, [b1, b2]; ...)` with kwargs `boundedness` (`:unbounded`/`:boundedbelow`/`:boundedabove`/`:bounded`), `leftequal`, `absolute`, `rank`, `ranksep`, `label`, `compact`, `reverse` + number formatting (`prefix`, `suffix`, `scale`, `precision`, `commas`, ...); quantile form `discretize(x, quantiles = [...])` or `discretize(x, ngroups = 4)` | `dim"discretize(TestScr, quantiles=[.25,.5,.75])"`, `dim"discretize(x, [0, 10], boundedness = :boundedbelow)"` |
-| `quantiles` | `quantiles(measure, [q1, q2, ...], [groupcol, ...])` — group by the 3rd-argument columns (auto-added to `by`, like `topnames`), aggregate `measure` per group (per `AggrHints`), then label each group by the quantile bucket its aggregate falls into. Boundaries are the INNER quantiles — 0 and 1 are implied, so `[.25,.5,.75]` yields `1. [0%, 25%)` … `4. [75%, 100%]`. An **empty** (or omitted) 3rd argument switches to window kind: rows are ranked individually within the partition (`dim"quantiles(TestScr, [.5], [])"`). Kwargs: `leftequal` (default `true`; `false` flips to `[0%, 25%]`, `(25%, 50%]`, …), `prefix` / `suffix` decorating the interval (`"1. <prefix> [0%, 25%) <suffix>"`) | `dim"quantiles(TestScr, [.25,.5,.75], [District])"` |
+| `quantiles` | `quantiles(measure, [q1, q2, ...])` — label each value by the quantile bucket it falls into. Bare use ranks rows individually (window kind); add `\|> groupby(keys...)` to aggregate `measure` per group first and label the groups. Boundaries are the INNER quantiles — 0 and 1 are implied, so `[.25,.5,.75]` yields `1. [0%, 25%)` … `4. [75%, 100%]`. Kwargs: `leftequal` (default `true`; `false` flips to `[0%, 25%]`, `(25%, 50%]`, …), `prefix` / `suffix` decorating the interval (`"1. <prefix> [0%, 25%) <suffix>"`) | `dim"quantiles(TestScr, [.5]) \|> groupby(District)"` |
 
 `discretize` used bare is **window**-kind (bins row values); wrap in
 `dimspec(...; by = :District, kind = :pivot)` to bin *group aggregates*
@@ -60,23 +60,41 @@ to window. Force the kind (and attach ordering or extra grouping keys) with
 Results are scattered back through the inverse sort permutation, so the new
 column stays aligned with the original row order.
 
-### The `orderby` modifier
+### Modifiers
 
-Ordering attaches to a spec with a postfix **modifier** — intent first:
+Engine options attach to a spec with postfix **modifiers** — intent first,
+option after (`∘` is a synonym for `|>`). Modifiers are metadata, never
+function calls, and their names (`orderby`, `groupby`) are reserved —
+`registerop!` will refuse them. One of each per spec; the Julia-side
+equivalent is `dimspec(spec; order = ..., by = ..., kind = ...)` — specifying
+the same option both ways is an error.
+
+**`orderby(cols...)`** — window ordering:
 
 ```julia
 dim"cumsum(sales) |> orderby(date)"            # ascending
-dim"cumsum(sales) ∘ orderby(date)"             # ∘ is a synonym for |>
 dim"lag(sales) |> orderby(date => :desc)"      # direction
 dim"cumsum(sales) |> orderby(region, date)"    # multi-key
 ```
 
-The modifier is engine metadata, never a function call: the partition is
-sorted, the operator runs over the sorted vectors, and results scatter back to
-the original rows. One `orderby` per spec; window kind only (pivot dimensions
-classify group aggregates — there is nothing to sort); `orderby` is a reserved
-name that `registerop!` will refuse. The Julia-side equivalent is
-`dimspec(spec; order = ...)` — specifying both is an error.
+The partition is sorted, the operator runs over the sorted vectors, and
+results scatter back to the original rows. Window kind only (pivot dimensions
+classify group aggregates — there is nothing to sort).
+
+**`groupby(keys...)`** — pivot grouping, the universal "right-group-by":
+
+```julia
+dim"discretize(EnrlTot, [35, 60]) |> groupby(District)"   # bin district totals
+dim"quantiles(TestScr, [.5]) |> groupby(District)"        # quantile-rank districts
+dim"hilo(TestScr) |> groupby(District)"                   # any host verb, zero registration
+```
+
+The measure is **aggregated at this granularity first** (per `AggrHints`,
+within each context partition) and the verb classifies the groups — the table
+is never reduced; each group's label broadcasts back to its member rows.
+Presence of `groupby` is what makes a spec pivot-kind. Verbs whose grouping
+column is data in the spec (`topnames`' 1st argument) imply their grouping and
+reject an additional `groupby`.
 
 ## Group-relative measures (window kind)
 
@@ -111,12 +129,13 @@ Extension is a trusted act done in host code, never via spec strings:
 ```julia
 registerop!(:double, x -> 2 .* x)     # dim"double(sales)"
 
-# a custom CLASSIFIER verb (pivot kind, like topnames): register the function,
-# then declare which argument carries its grouping key(s)
+# pivot verbs need NO registration -- users write `|> groupby(keys...)`:
+registerop!(:hilo, measure -> ...)              # dim"hilo(x) |> groupby(District)"
+
+# register a CLASSIFIER only when the grouping column is DATA in the spec
+# (like topnames, whose 1st argument is the label source):
 registerop!(:tophalf, (name, measure) -> ...)   # labels one value per group
 registerclassifier!(:tophalf, 1)                # argument 1 = the name column
-# array-of-columns classifiers use many = true (quantiles is
-# registerclassifier!(:quantiles, 3, many = true))
 ```
 
 Host-registered operators are deliberately **not** listed here — this document

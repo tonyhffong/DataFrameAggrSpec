@@ -48,7 +48,7 @@ import DataFrameAggrSpec: WindowDim, PivotDim, dependencies   # internals, white
     # per-operator behavior tests live in test/safe-aggr.jl / test/safe-dim.jl
 end
 
-@testset "orderby modifier (parse level)" begin
+@testset "modifiers (parse level)" begin
     # intent first, modifier after; ∘ and |> are synonyms
     s1 = dim"cumsum(sales) ∘ orderby(date)"
     s2 = dim"cumsum(sales) |> orderby(date)"
@@ -61,6 +61,18 @@ end
     @test dim"lag(sales) |> orderby(date => :desc)".order == [:date => true]
     @test dim"cumsum(sales) |> orderby(region, date)".order ==
           [:region => false, :date => false]
+
+    # groupby: varargs, array form, ∘ spelling -- marks pivot grouping
+    g1 = dim"discretize(EnrlTot, [35]) |> groupby(District)"
+    g2 = dim"discretize(EnrlTot, [35]) ∘ groupby([District, County])"
+    @test g1.by == [:District]
+    @test g2.by == [:District, :County]
+    @test g1.fname == :discretize && g1.cols == [:EnrlTot]
+    @test dim"mean(TestScr) |> groupby(District, County)".by == [:District, :County]
+
+    # both modifiers parse together (kind conflict is a construction-time error)
+    gb = dim"discretize(x, [1]) |> groupby(g) |> orderby(d)"
+    @test gb.by == [:g] && gb.order == [:d => false]
 
     modreject(f, s, needle) = begin
         err = try
@@ -82,7 +94,14 @@ end
     @test modreject(parsedim, "sum(a |> b)", "unknown function")   # nested, not peeled
     @test modreject(parseaggr, "sum(_) |> orderby(date)",
                     "dimension-spec features")
-    @test_throws ErrorException registerop!(:orderby, identity)   # reserved name
+    @test modreject(parsedim, "mean(x) |> groupby(a) |> groupby(b)",
+                    "duplicate groupby")
+    @test modreject(parsedim, "mean(x) |> groupby()", "at least one column")
+    @test modreject(parsedim, "mean(x) |> groupby([])", "at least one column")
+    @test modreject(parsedim, "mean(x) |> groupby(3)", "column names")
+    @test modreject(parseaggr, "sum(_) |> groupby(g)", "dimension-spec features")
+    @test_throws ErrorException registerop!(:orderby, identity)   # reserved names
+    @test_throws ErrorException registerop!(:groupby, identity)
 end
 
 @testset "rejection matrix" begin

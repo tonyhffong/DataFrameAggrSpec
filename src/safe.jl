@@ -22,11 +22,16 @@
 
 const SafeOps = Dict{Symbol,Base.Callable}()   # Callable: constructors (Weights) too
 
-# postfix MODIFIER names: `spec ∘ orderby(cols...)` / `spec |> orderby(cols...)`
-# attach engine metadata to a dim spec. Modifiers are peeled structurally at
-# parse time (peel_modifiers) and are never called -- reserve their names so a
-# host cannot shadow them with registerop!.
-const SafeModifiers = (:orderby,)
+# postfix MODIFIER names: `spec ∘ modifier(cols...)` / `spec |> modifier(cols...)`
+# attach engine metadata to a dim spec:
+#   orderby(cols...) -- window ordering (sort the partition before the kernel)
+#   groupby(keys...) -- pivot grouping: aggregate the spec's measure columns at
+#                       this granularity (per AggrHints) BEFORE the verb
+#                       classifies; the table is never reduced -- each group's
+#                       label broadcasts back to its member rows
+# Modifiers are peeled structurally at parse time (peel_modifiers) and are
+# never called -- reserve their names so a host cannot shadow them.
+const SafeModifiers = (:orderby, :groupby)
 
 # extension is a trusted act done in host code, never via spec strings
 function registerop!(name::Symbol, f::Base.Callable)
@@ -80,24 +85,24 @@ end
 const DefaultSafeOps = sort!(collect(keys(SafeOps)))
 
 # ---- classifier verbs -------------------------------------------------------
-# Pivot-kind dimension verbs whose spec declares its own grouping keys.
-# name => (groupkey argument position, many):
-#   many = false -> that argument is a single grouping column (topnames' name col)
-#   many = true  -> that argument is an ARRAY of grouping columns; an empty (or
-#                   omitted) array means "rank rows individually" = window kind
-# The table drives kind inference (autokind, chain.jl) and the by-fixup
-# (pivot_groupkeys, dimension.jl) for BOTH trusted-Expr and safe-string specs,
-# so hosts can add their own classifiers: registerop! the function, then
-# registerclassifier! its grouping-argument position.
-const ClassifierVerbs = Dict{Symbol,Tuple{Int,Bool}}()
+# Pivot-kind dimension verbs whose grouping column is DATA in the spec itself
+# (topnames' 1st argument is the label source). name => argument position of
+# that single grouping/label column. The table drives kind inference (autokind,
+# chain.jl) and the by-fixup (pivot_groupkeys, dimension.jl) for BOTH
+# trusted-Expr and safe-string specs.
+#
+# Most pivot verbs need NO registration: the universal `|> groupby(keys...)`
+# modifier marks any spec pivot-kind with those inner grouping keys. Register a
+# classifier only when the grouping column doubles as verb data; such verbs
+# reject an additional groupby modifier.
+const ClassifierVerbs = Dict{Symbol,Int}()
 
-function registerclassifier!(name::Symbol, argpos::Integer; many::Bool = false)
-    ClassifierVerbs[name] = (Int(argpos), many)
+function registerclassifier!(name::Symbol, argpos::Integer)
+    ClassifierVerbs[name] = Int(argpos)
     nothing
 end
 
 registerclassifier!(:topnames, 1)
-registerclassifier!(:quantiles, 3, many = true)
 
 # ---- spec types -------------------------------------------------------------
 
@@ -115,9 +120,11 @@ struct SafeDimSpec
     cols::Vector{Symbol}   # :_ forbidden (checked at parse)
     posargs::Vector{Any}   # simplified top-level positional args: Symbol (bare
                            # column), Vector{Symbol} ([col, ...] array), else
-                           # nothing -- feeds pivot_groupkeys (topnames/quantiles)
-    order::Vector{Pair{Symbol,Bool}}  # from a peeled `... |> orderby(cols...)`
-end                                   # modifier; consumed by WindowDim
+                           # nothing -- feeds pivot_groupkeys (topnames)
+    order::Vector{Pair{Symbol,Bool}}  # from a peeled `|> orderby(cols...)`;
+                                      # consumed by WindowDim
+    by::Vector{Symbol}     # from a peeled `|> groupby(keys...)`; marks pivot
+end                        # kind, consumed by PivotDim as its inner grouping
 
 Base.:(==)(a::SafeAggrSpec, b::SafeAggrSpec) = a.source == b.source
 Base.hash(a::SafeAggrSpec, h::UInt) = hash((:SafeAggrSpec, a.source), h)
@@ -264,11 +271,12 @@ ismodifiercall(x) = Base.Meta.isexpr(x, :call) && in(x.args[1], SafeModifiers)
 ismodifiershape(ex) =
     Base.Meta.isexpr(ex, :call, 3) && (ex.args[1] == :∘ || ex.args[1] == :|>)
 
-# peel postfix modifiers off a dim spec: `spec ∘ orderby(cols...)` (or `|>`,
-# the ASCII twin). Intent first, modifier after; the modifier is engine
-# METADATA -- interpreted structurally, never called. Returns (inner, order).
+# peel postfix modifiers off a dim spec: `spec ∘ modifier(...)` (or `|>`, the
+# ASCII twin). Intent first, modifier after; modifiers are engine METADATA --
+# interpreted structurally, never called. Returns (inner, order, by).
 function peel_modifiers(ex, what::String)
     order = Pair{Symbol,Bool}[]
+    by = Symbol[]
     while ismodifiershape(ex)
         combinator, lhs, rhs = ex.args[1], ex.args[2], ex.args[3]
         if ismodifiercall(lhs)
@@ -281,15 +289,31 @@ function peel_modifiers(ex, what::String)
                   join(string.(SafeModifiers), ", ") * ") after '" *
                   string(combinator) * "', got " * string(rhs))
         end
-        isempty(order) || error(what * ": duplicate orderby modifier")
+        modname = rhs.args[1]
         args = rhs.args[2:end]
-        isempty(args) && error(what * ": orderby needs at least one column")
-        for a in args
-            push!(order, orderentry_parsed(a))   # :col | col => :asc/:desc
+        if modname == :orderby
+            isempty(order) || error(what * ": duplicate orderby modifier")
+            isempty(args) && error(what * ": orderby needs at least one column")
+            for a in args
+                push!(order, orderentry_parsed(a))   # :col | col => :asc/:desc
+            end
+        else # :groupby -- bare columns (varargs) or one [col, ...] array
+            isempty(by) || error(what * ": duplicate groupby modifier")
+            for a in args
+                s = simple_posarg(a)
+                if isa(s, Symbol)
+                    push!(by, s)
+                elseif isa(s, Vector{Symbol})
+                    append!(by, s)
+                else
+                    error(what * ": groupby expects column names, got " * string(a))
+                end
+            end
+            isempty(by) && error(what * ": groupby needs at least one column")
         end
         ex = lhs
     end
-    (ex, order)
+    (ex, order, by)
 end
 
 # repeated parses of the same string return the identical spec object
@@ -300,8 +324,8 @@ function parseaggr(s::AbstractString)
     get!(SafeSpecCache, (:aggr, src)) do
         ex = safe_parse(src, "parseaggr")
         if ismodifiershape(ex) && (ismodifiercall(ex.args[2]) || ismodifiercall(ex.args[3]))
-            error("parseaggr: modifiers (orderby) are dimension-spec features; " *
-                  "aggregation specs do not support them")
+            error("parseaggr: modifiers (orderby, groupby) are dimension-spec " *
+                  "features; aggregation specs do not support them")
         end
         if isa(ex, Symbol)                   # aggr"sum" -- bare registered name
             haskey(SafeOps, ex) ||
@@ -323,7 +347,7 @@ function parsedim(s::AbstractString)
     src = String(strip(s))
     get!(SafeSpecCache, (:dim, src)) do
         ex = safe_parse(src, "parsedim")
-        (ex, order) = peel_modifiers(ex, "parsedim")
+        (ex, order, by) = peel_modifiers(ex, "parsedim")
         isa(ex, Expr) && ex.head == :call ||
             error("parsedim: spec must be a function call (e.g. \"cumsum(sales)\"), got \"" *
                   src * "\"")
@@ -333,7 +357,7 @@ function parsedim(s::AbstractString)
             error("parsedim: '_' is the aggregation target placeholder and has " *
                   "no meaning in a dim spec")
         posargs = Any[simple_posarg(a) for a in positional_args(ex)]
-        SafeDimSpec(src, ex.args[1], (vs...) -> thunk(vs), cols, posargs, order)
+        SafeDimSpec(src, ex.args[1], (vs...) -> thunk(vs), cols, posargs, order, by)
     end::SafeDimSpec
 end
 

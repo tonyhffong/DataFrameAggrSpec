@@ -162,7 +162,7 @@ result = topnames( name, score, 2 )
 @test result[ 4 ] == "Others"
 
 # Note that in actual usage "name" is always sorted
-# see CalcPivot constructor's handling of topnames' "by" argument
+# (topnames is a classifier verb: its name column is the auto-inferred group key)
 name=[ "Alice", "Bob", "Jane", "Joe" ]
 score=[ 7, 9, 9, 5 ]
 result = topnames( name, score, 2, dense=false )

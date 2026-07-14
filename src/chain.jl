@@ -45,34 +45,17 @@ function dimspec(
     DimSpec(spec, tosyms(by), normalize_order(order), kind)
 end
 
-# :auto kind: window, except the classifier verbs (ClassifierVerbs table,
-# safe.jl). A single-column classifier (topnames) is always pivot; an
-# array-of-columns classifier (quantiles) is pivot only when the array is
-# present and non-empty — empty/omitted means "rank rows individually" =
-# window kind. Present-but-malformed grouping args still route to PivotDim
-# so its clear error fires.
+# :auto kind: pivot iff the spec carries an in-string `|> groupby(...)`
+# (SafeDimSpec.by) or its verb is a registered classifier (topnames -- its
+# grouping column is data in the spec); window otherwise.
 function autokind(spec)
     isa(spec, Expr) || return :window
     fname = check_spec_call(spec, "dimension spec")
-    meta = get(ClassifierVerbs, fname, nothing)
-    meta === nothing && return :window
-    (argpos, many) = meta
-    many || return :pivot
-    pa = positional_args(spec)
-    length(pa) < argpos && return :window
-    Base.Meta.isexpr(pa[argpos], :vect) && isempty(pa[argpos].args) && return :window
-    :pivot
+    haskey(ClassifierVerbs, fname) ? :pivot : :window
 end
 
-function autokind(s::SafeDimSpec)
-    meta = get(ClassifierVerbs, s.fname, nothing)
-    meta === nothing && return :window
-    (argpos, many) = meta
-    many || return :pivot
-    length(s.posargs) < argpos && return :window
-    s.posargs[argpos] == Symbol[] && return :window
-    :pivot
-end
+autokind(s::SafeDimSpec) =
+    (!isempty(s.by) || haskey(ClassifierVerbs, s.fname)) ? :pivot : :window
 
 # build a concrete dimension for a chain declaration under a left context
 function chain_dim(name::Symbol, payload, context::Vector{Symbol})

@@ -628,15 +628,14 @@ end
 #   1. [0%, 25%)   2. [25%, 50%)   3. [50%, 75%)   4. [75%, 100%]
 # (leftequal = false flips to "[0%, 25%]", "(25%, 50%]", ...). `prefix` /
 # `suffix` decorate the interval: "1. <prefix> [0%, 25%) <suffix>".
-# In a dim spec this verb is pivot-kind like topnames:
-#   dim"quantiles(TestScr, [.25,.5,.75], [District])"
+# In a dim spec, bare use buckets rows individually (window kind); grouping is
+# declared via the universal modifier --
+#   dim"quantiles(TestScr, [.25,.5,.75]) |> groupby(District)"
 # groups by District, aggregates TestScr per district (per AggrHints), and
-# buckets the districts. The 3rd argument declares that grouping granularity;
-# its value is ignored here.
+# buckets the districts (Julia-side: dimspec(...; by=:District, kind=:pivot)).
 function quantiles(
     measure::AbstractVector,
-    qs::AbstractVector{<:Real},
-    groupcols = nothing;
+    qs::AbstractVector{<:Real};
     leftequal::Bool = true,
     prefix::AbstractString = "",
     suffix::AbstractString = "",

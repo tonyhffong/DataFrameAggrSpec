@@ -64,15 +64,21 @@ dim(df, [:region, :cum => dim"cumsum(sales) |> orderby(date)"])
 dim(df, [:rank => dim"topnames(region, sales, 2)"])
 
 # bucket each row by which sales quantile it falls in ("1. [0%, 25%)", ...)
-dim(df, [:q => dim"quantiles(sales, [.25, .5], [])"])
+dim(df, [:q => dim"quantiles(sales, [.25, .5])"])
+
+# same idea per GROUP: aggregate sales by region first, then bucket the regions
+dim(df, [:rq => dim"quantiles(sales, [.5]) |> groupby(region)"])
 ```
 
 `dim` returns a new frame (the input is untouched); `dim!` adds the columns in
-place. `spec |> orderby(cols...)` attaches an ordering to a spec (intent first,
-modifier after — `∘` is the pretty synonym, `orderby(date => :desc)` for
-direction; the modifier is metadata for the engine, never a function call).
-The available operations are listed in
-[docs/safe-dimension-operators.md](docs/safe-dimension-operators.md).
+place. Two postfix **modifiers** attach engine options to a spec (intent
+first, modifier after — `∘` is the pretty synonym; modifiers are metadata,
+never function calls): `spec |> orderby(cols...)` sorts the partition before
+an order-sensitive operator runs (`orderby(date => :desc)` for direction), and
+`spec |> groupby(keys...)` aggregates the measure at that granularity *first*
+so the verb classifies groups instead of rows — the table is never reduced;
+each group's label lands on all its member rows. The available operations are
+listed in [docs/safe-dimension-operators.md](docs/safe-dimension-operators.md).
 
 ### Chains: dimensions become pivot keys
 
@@ -108,7 +114,7 @@ More chain forms:
   ```julia
   df |> dim([:region, :share => dim"sales / sum(sales)"],
             [:region, :cum   => dim"cumsum(sales) |> orderby(date)"]) |>
-        pivottable([:region, :bucket => dim"quantiles(sales, [.5], [])"]; hints)
+        pivottable([:region, :bucket => dim"quantiles(sales, [.5])"]; hints)
   ```
 
   The syntax forces the distinction: if it's in a chain, it's a key; if it's a
@@ -177,9 +183,12 @@ macros are compile-time sugar for the same thing).
   `cumsum`/`cumprod`, and elementwise math (`abs log exp sqrt round …`).
   `listops()` shows the registry; the full reference lives in the two
   [docs/](docs/) operator documents.
-- a top-level `spec ∘ orderby(cols...)` / `spec |> orderby(cols...)` attaches
-  an ordering **modifier** — peeled structurally as engine metadata, never
-  called (dim specs only; `orderby` is a reserved name).
+- top-level `spec ∘ modifier(...)` / `spec |> modifier(...)` attaches engine
+  **modifiers** — `orderby(cols...)` (window ordering) and `groupby(keys...)`
+  (pivot grouping: aggregate the measure at this granularity first) — peeled
+  structurally as metadata, never called (dim specs only; the names are
+  reserved). `groupby` is what makes any verb — including host-registered
+  ones — pivot-kind, with zero per-verb registration.
 - everything else is rejected with a clear error: qualified names (`Core.eval`),
   macros, interpolation, lambdas, indexing, blocks, comprehensions, splats.
 - one wrinkle of "bare identifier = column": `missing`, `pi`, `Inf` are
@@ -246,14 +255,14 @@ construct:
   grouped by the dimension's `by` keys, the referenced columns are aggregated
   per group (via `AggrHints`), the spec runs over those per-group vectors, and
   each group's label is broadcast back to its member rows. This is the home of
-  `topnames` / `quantiles` / `discretize`-over-group-sums (the heir of the
-  legacy `CalcPivot`). Classifier verbs infer this kind (see
-  `registerclassifier!`); force it with `dimspec(...; kind = :pivot)`.
+  `topnames` / `quantiles` / `discretize`-over-group-sums. Classifier verbs infer
+  this kind (see `registerclassifier!`); force it with `dimspec(...; kind = :pivot)`.
 
 `dimspec(ex; by = extra_grouping_keys, order = ..., kind = :window | :pivot)`
 is the full options carrier — the Julia-side equivalent of the in-string
-`|> orderby(...)` modifier (specifying both is an error, not a precedence
-game). **The `by` rule**: `by` always means the grouping
+`|> orderby(...)` / `|> groupby(...)` modifiers (specifying the same option
+both ways is an error, not a precedence game). **The `by` rule**: `by` always
+means the grouping
 keys a dimension declares *itself*; a chain's left context layers on top — for
 a window dimension it is unioned into the partition, for a pivot dimension it
 becomes the outer context.
@@ -273,7 +282,7 @@ dimensions, then `aggregate` over the full key list.)
   intervals, boundedness modes, and quantile-based auto-breaks.
 - **`topnames(name, measure, n; …)`** — top-N ranking with tie handling
   (`dense`), an `"Others"` bucket, absolute-value mode, parenthesised negatives.
-- **`quantiles(measure, qs, groupcols; …)`** — quantile-bucket labels
+- **`quantiles(measure, qs; …)`** — quantile-bucket labels
   (`"1. [0%, 25%)"`), for groups or individual rows.
 - **`strjoinuniq(x, sep, limit)`** — unique values as a sorted, joined,
   length-capped display string.
@@ -281,23 +290,12 @@ dimensions, then `aggregate` over the full key list.)
   order-based window dimensions.
 - **`uniqvalue`**, **`unionall`** — the single unique value / flattened union.
 
-## Legacy API (deprecated, kept for TermWin)
-
-`CalcPivot(spec, by)` + `liftCalcPivotToFunc(ex, by)` and the
-`CalcPivotAggrDepCache` side channel still work exactly as before, now shimmed
-over the dimension engine. New code should use chains + `dim`: row-aligned
-output, `AggrHints` instead of kwargs, no side-channel cache.
-`Dimension(name, cp::CalcPivot)` converts — it returns a chain entry
-(`name => dimspec(...)`) to splice after the applied-pivots prefix:
-`dim(sdf, [appliedpivots..., Dimension(nextpivot, cp)]; hints)`.
-
 ## Trust boundary
 
 **The rule: `Expr` / `Symbol` / `Function` specs are trusted; plain `String`s
-are untrusted** — parsed by the safe whitelist grammar everywhere in the API
-(the only exception is the deprecated legacy `CalcPivot(::String)` constructor,
-frozen for old configs). Strings are the one spec form that can arrive from a
-user's text field by accident, so they can never reach eval.
+are untrusted** — parsed by the safe whitelist grammar everywhere in the API, with
+no exceptions. Strings are the one spec form that can arrive from a user's text
+field by accident, so they can never reach eval.
 
 Trusted `Expr` specs are compiled with `Core.eval(Main, …)` so that
 module-qualified names (`StatsBase.mean`) resolve against your loaded packages.

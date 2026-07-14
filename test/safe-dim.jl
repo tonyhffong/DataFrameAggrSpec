@@ -1,6 +1,7 @@
 using DataFrameAggrSpec
 using DataFrames
 using CategoricalArrays
+using Statistics
 using Test
 
 import DataFrameAggrSpec: WindowDim, PivotDim, dependencies   # internals, white-box tests
@@ -54,32 +55,32 @@ end
 @testset "quantiles" begin
     # verb semantics: label each element by its quantile bucket
     v = [1.0, 2.0, 3.0, 4.0]
-    q = quantiles(v, [0.25, 0.5, 0.75], nothing)
+    q = quantiles(v, [0.25, 0.5, 0.75])
     @test string.(q) == ["1. [0%, 25%)", "2. [25%, 50%)", "3. [50%, 75%)", "4. [75%, 100%]"]
     @test q isa CategoricalArrays.CategoricalArray
 
     # leftequal = false flips the interval closure
-    q2 = quantiles(v, [0.25, 0.5, 0.75], nothing; leftequal = false)
+    q2 = quantiles(v, [0.25, 0.5, 0.75]; leftequal = false)
     @test string(q2[1]) == "1. [0%, 25%]"
     @test string(q2[2]) == "2. (25%, 50%]"
 
     # prefix / suffix decorate the interval
-    @test string(quantiles(v, [0.5], nothing; prefix = "scr")[1]) == "1. scr [0%, 50%)"
-    @test string(quantiles(v, [0.5], nothing; suffix = "tile")[4]) == "2. [50%, 100%] tile"
+    @test string(quantiles(v, [0.5]; prefix = "scr")[1]) == "1. scr [0%, 50%)"
+    @test string(quantiles(v, [0.5]; suffix = "tile")[4]) == "2. [50%, 100%] tile"
 
     # non-integer percent boundary, missing passthrough
-    @test string(quantiles(v, [0.125], nothing)[4]) == "2. [12.5%, 100%]"
-    @test ismissing(quantiles([1.0, missing, 3.0], [0.5], nothing)[2])
+    @test string(quantiles(v, [0.125])[4]) == "2. [12.5%, 100%]"
+    @test ismissing(quantiles([1.0, missing, 3.0], [0.5])[2])
 
     # validation
-    @test_throws ErrorException quantiles(v, [0.5, 0.25], nothing)
-    @test_throws ErrorException quantiles(v, [0.0, 0.5], nothing)
-    @test_throws ErrorException quantiles(v, Float64[], nothing)
+    @test_throws ErrorException quantiles(v, [0.5, 0.25])
+    @test_throws ErrorException quantiles(v, [0.0, 0.5])
+    @test_throws ErrorException quantiles(v, Float64[])
 
-    # untrusted DSL: pivot kind inferred, 3rd-argument columns folded into `by`
+    # pivot kind comes from the universal groupby modifier
     df = sddf()
-    s = dim"quantiles(TestScr, [.25,.5,.75], [District])"
-    @test s.posargs[3] == [:District]
+    s = dim"quantiles(TestScr, [.25,.5,.75]) |> groupby(District)"
+    @test s.by == [:District]
     d = PivotDim(:qd, s)
     @test d.by == [:District]
     @test dependencies(d) == [:TestScr]
@@ -89,19 +90,20 @@ end
     @test string.(out.qd) == ["3. [50%, 75%)", "3. [50%, 75%)", "4. [75%, 100%]",
                               "3. [50%, 75%)", "4. [75%, 100%]", "1. [0%, 25%)"]
 
-    # trusted Expr form takes the same fixup path
-    d2 = PivotDim(:qd, :( quantiles(:TestScr, [.25, .5, .75], [:District]) ))
+    # trusted Expr form: dimspec is the Julia-side equivalent of the modifier
+    d2 = PivotDim(:qd, :( quantiles(:TestScr, [.25, .5, .75]) ); by = :District)
     @test d2.by == [:District]
     @test isequal(string.(dim(df, [d2]).qd), string.(out.qd))
 
     # in a chain: pivot kind + left context
     keycols, dims = DataFrameAggrSpec.normalize_chain(
-        [:County, :qd => dim"quantiles(TestScr, [.5], [District])"])
+        [:County, :qd => dim"quantiles(TestScr, [.5]) |> groupby(District)"])
     @test dims[1] isa PivotDim
     @test dims[1].by == [:District] && dims[1].context == [:County]
 
-    # malformed 3rd argument
-    @test_throws ErrorException PivotDim(:bad, dim"quantiles(TestScr, [.5], District)")
+    # the old 3rd-argument form is gone: it parses as a window dim whose kernel
+    # then fails at the verb (no such method)
+    @test_throws MethodError dim(df, [:bad => dim"quantiles(TestScr, [.5], [District])"])
 end
 
 @testset "orderby modifier (behavior)" begin
@@ -136,36 +138,48 @@ end
     @test dependencies(dims[1]) == [:sales, :date]
 end
 
-@testset "quantiles with empty grouping = row-level window" begin
-    # an empty (or omitted) 3rd argument ranks rows INDIVIDUALLY into buckets
+@testset "groupby modifier (behavior)" begin
+    df = sddf()
+
+    # no groupby = per-row window bucketing
     df0 = DataFrame(x = [1.0, 2.0, 3.0, 4.0])
-    out = dim(df0, :q => dim"quantiles(x, [.25,.5,.75], [])")
+    out = dim(df0, :q => dim"quantiles(x, [.25,.5,.75])")
     @test string.(out.q) ==
           ["1. [0%, 25%)", "2. [25%, 50%)", "3. [50%, 75%)", "4. [75%, 100%]"]
 
-    # omitted 3rd argument behaves the same
-    out2 = dim(df0, :q => dim"quantiles(x, [.25,.5,.75])")
-    @test string.(out2.q) == string.(out.q)
-
-    # kind inference: window, partitioned by the chain's left context
+    # window kind partitions by the chain's left context
     keycols, dims = DataFrameAggrSpec.normalize_chain(
-        [:County, :rq => dim"quantiles(TestScr, [.5], [])"])
+        [:County, :rq => dim"quantiles(TestScr, [.5])"])
     @test dims[1] isa WindowDim
     @test dims[1].by == [:County]
-
-    # per-county row bucketing: C1 scores [10,20,50,30] (median 25),
-    # C2 scores [40,10] (median 25)
-    df = sddf()
-    out3 = dim(df, [:County, :rq => dim"quantiles(TestScr, [.5], [])"])
+    out3 = dim(df, [:County, :rq => dim"quantiles(TestScr, [.5])"])
     @test string.(out3.rq) == ["1. [0%, 50%)", "1. [0%, 50%)", "2. [50%, 100%]",
                                "2. [50%, 100%]", "2. [50%, 100%]", "1. [0%, 50%)"]
 
-    # trusted Expr form infers window kind the same way
-    keycols2, dims2 = DataFrameAggrSpec.normalize_chain(
-        [:County, :rq => :( quantiles(:TestScr, [.5], []) )])
-    @test dims2[1] isa WindowDim && dims2[1].by == [:County]
+    # discretize goes pivot via the modifier -- no dimspec needed
+    # (district EnrlTot sums: d1=200, d2=50, d3=30, d4=80, d5=20)
+    df4 = dim(df, [:size => dim"discretize(EnrlTot, [35, 60]) |> groupby(District)"])
+    @test string.(df4.size) == ["3. 60+", "3. 60+", "2. 35…59", "1. ≤34", "3. 60+", "1. ≤34"]
 
-    # a present-but-malformed 3rd argument still errors (pivot intent assumed)
+    # array form of the keys, and the ∘ spelling
+    df5 = dim(df, [:size2 => dim"discretize(EnrlTot, [35, 60]) ∘ groupby([District])"])
+    @test string.(df5.size2) == string.(df4.size)
+
+    # an UNREGISTERED host verb classifies via groupby -- zero registration
+    registerop!(:hilo,
+        (measure,) -> [m > Statistics.median(measure) ? "hi" : "lo" for m in measure])
+    hf = dim(df, [:County, :half => dim"hilo(TestScr) |> groupby(District)"])
+    # per County, district sums: C1 [d1=30, d2=50, d3=30] (median 30),
+    # C2 [d4=40, d5=10] (median 25)
+    @test hf.half == ["lo", "lo", "hi", "lo", "hi", "lo"]
+
+    # conflicts are errors, never precedence
+    @test_throws ErrorException dim(df, [:x =>
+        dimspec(dim"discretize(EnrlTot, [35]) |> groupby(District)"; by = :County)])
     @test_throws ErrorException DataFrameAggrSpec.normalize_chain(
-        [:bad => dim"quantiles(TestScr, [.5], District)"])
+        [:bad => dim"topnames(District, TestScr, 5) |> groupby(County)"])
+    @test_throws ErrorException DataFrameAggrSpec.normalize_chain(
+        [:bad => dim"discretize(EnrlTot, [35]) |> groupby(District) |> orderby(TestScr)"])
+    @test_throws ErrorException dim(df, [:bad =>
+        dimspec(dim"discretize(EnrlTot, [35]) |> groupby(District)"; kind = :window)])
 end

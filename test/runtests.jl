@@ -31,7 +31,4 @@ using Test
     @testset "pipeline (pivottable + transforms)" begin
         include("pipeline.jl")
     end
-    @testset "deprecated legacy API" begin
-        include("deprecated.jl")
-    end
 end

@@ -9,7 +9,7 @@
 #                  lag/lead.
 #   * PivotDim  -- classify *groups* by their aggregates (topnames, discretize
 #                  over group sums); one label per group, broadcast to member
-#                  rows. The heir of the legacy CalcPivot.
+#                  rows.
 
 abstract type AbstractDimension end
 
@@ -83,6 +83,9 @@ function WindowDim(
         check_spec_call(spec, "WindowDim")
         refs = referenced_columns(spec)
     elseif isa(spec, SafeDimSpec)
+        isempty(spec.by) || error(
+            "WindowDim " * string(name) * ": the groupby modifier implies pivot kind",
+        )
         refs = copy(spec.cols)
         if !isempty(spec.order)   # from a peeled `... |> orderby(cols...)`
             if isempty(normalize_order(order))
@@ -200,42 +203,26 @@ expr_sym(a) =
     isa(a, QuoteNode) && isa(a.value, Symbol) ? a.value :
     Base.Meta.isexpr(a, :quote, 1) && isa(a.args[1], Symbol) ? a.args[1] : nothing
 
-groupkey_error(fname::Symbol, argpos::Int, many::Bool) = error(
-    string(fname) * ": argument " * string(argpos) * " expects " *
-    (many ? "an array of grouping columns" : "a grouping column (name column)"),
+groupkey_error(fname::Symbol, argpos::Int) = error(
+    string(fname) * ": argument " * string(argpos) *
+    " expects a grouping column (name column)",
 )
 
 function pivot_groupkeys(fname::Symbol, spec::Expr)
-    meta = get(ClassifierVerbs, fname, nothing)
-    meta === nothing && return Symbol[]
-    (argpos, many) = meta
+    argpos = get(ClassifierVerbs, fname, 0)
+    argpos == 0 && return Symbol[]
     pa = positional_args(spec)
-    if many
-        (length(pa) >= argpos && Base.Meta.isexpr(pa[argpos], :vect)) ||
-            groupkey_error(fname, argpos, many)
-        syms = [expr_sym(a) for a in pa[argpos].args]
-        any(s -> s === nothing, syms) && groupkey_error(fname, argpos, many)
-        return Symbol[syms...]
-    else
-        s = length(pa) >= argpos ? expr_sym(pa[argpos]) : nothing
-        s === nothing && groupkey_error(fname, argpos, many)
-        return Symbol[s]
-    end
+    s = length(pa) >= argpos ? expr_sym(pa[argpos]) : nothing
+    s === nothing && groupkey_error(fname, argpos)
+    Symbol[s]
 end
 
 function pivot_groupkeys(fname::Symbol, sd::SafeDimSpec)
-    meta = get(ClassifierVerbs, fname, nothing)
-    meta === nothing && return Symbol[]
-    (argpos, many) = meta
-    if many
-        (length(sd.posargs) >= argpos && isa(sd.posargs[argpos], Vector{Symbol})) ||
-            groupkey_error(fname, argpos, many)
-        return copy(sd.posargs[argpos])
-    else
-        (length(sd.posargs) >= argpos && isa(sd.posargs[argpos], Symbol)) ||
-            groupkey_error(fname, argpos, many)
-        return Symbol[sd.posargs[argpos]]
-    end
+    argpos = get(ClassifierVerbs, fname, 0)
+    argpos == 0 && return Symbol[]
+    (length(sd.posargs) >= argpos && isa(sd.posargs[argpos], Symbol)) ||
+        groupkey_error(fname, argpos)
+    Symbol[sd.posargs[argpos]]
 end
 
 function PivotDim(
@@ -260,6 +247,24 @@ function PivotDim(
     end
     byv = tosyms(by)
     ctxv = tosyms(context)
+    if isa(spec, SafeDimSpec) && !isempty(spec.by)   # `|> groupby(keys...)`
+        if haskey(ClassifierVerbs, spec.fname)
+            error(
+                "PivotDim " * string(name) * ": " * string(spec.fname) *
+                " declares its own grouping (argument " *
+                string(ClassifierVerbs[spec.fname]) *
+                "); remove the groupby modifier",
+            )
+        end
+        if isempty(byv)
+            byv = copy(spec.by)
+        else
+            error(
+                "PivotDim " * string(name) * ": grouping given both in the " *
+                "spec string (groupby) and via dimspec/by",
+            )
+        end
+    end
     for k in pivot_groupkeys(fname, spec)
         in(k, byv) || push!(byv, k)
     end
@@ -312,17 +317,6 @@ function pivot_values(df::AbstractDataFrame, d::PivotDim, hints::AggrHints)
     # default lexical level order is the intended one even across context partitions
     anycat ? categorical(identity.(out)) : identity.(out)
 end
-
-# --------------------------------------------- Dimension (legacy bridge) --
-
-# `Dimension` exists ONLY to convert a legacy CalcPivot -- it returns a CHAIN
-# ENTRY (`name => dimspec(...)`) to splice after the applied-pivots prefix:
-#     dim(sdf, [appliedpivots..., Dimension(nextpivot, cp)]; hints)
-# A CalcPivot's `by` are inner grouping keys; the outer context comes from the
-# chain prefix (TermWin's tree used to supply it by pre-filtering rows).
-Dimension(name::Symbol, cp::CalcPivot) =
-    isempty(cp.by) ? (name => dimspec(cp.spec)) :
-    (name => dimspec(cp.spec; by = cp.by, kind = :pivot))
 
 # ------------------------------------------------------------- application --
 

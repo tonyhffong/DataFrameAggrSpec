@@ -21,13 +21,11 @@ module DataFrameAggrSpec
 #     composable with `|>` and `∘`.
 #   * presentation verbs — `discretize` (labeled/ranked binning), `topnames`
 #     (top-N ranking with tie/dense/"Others" handling), `lag`/`lead`.
-#   * legacy (deprecated, TermWin transition) — `CalcPivot` +
-#     `liftCalcPivotToFunc`, shimmed over the dimension engine.
 #
 # SECURITY / TRUST BOUNDARY — the rule: Expr/Symbol/Function specs are TRUSTED;
 # plain Strings are UNTRUSTED and parsed by the safe whitelist grammar (safe.jl —
 # an eval-free, default-deny interpreter over the SafeOps registry) everywhere in
-# the API. Sole exception: the frozen legacy `CalcPivot(::String)` constructor.
+# the API, with no exceptions.
 # Trusted Expr specs are compiled with `Core.eval(Main, ...)` so module-qualified
 # names (e.g. `StatsBase.mean`) resolve against the *user's* loaded packages; the
 # guards (must be a `:call`, no curly, simple/dotted name, reject any `!`) keep
@@ -44,14 +42,12 @@ include("aggrspec.jl")    # aggregation-spec compiler (liftAggrSpecToFunc) + Agg
 include("verbs.jl")       # discretize / topnames / uniqvalue / unionall / lag / lead
 include("safe.jl")        # UNTRUSTED whitelist DSL: aggr"..." / dim"..." (needs verbs;
                           # dimension.jl signatures need SafeDimSpec -- keep this order)
-include("deprecated.jl")  # legacy CalcPivot / liftCalcPivotToFunc
 include("dimension.jl")   # WindowDim / PivotDim dimensioning engine
 include("chain.jl")       # chains: left-context pivot lists + dimspec
 include("pivot.jl")       # hints-driven grouped aggregation
 
 # Public runtime-spec API
-export liftAggrSpecToFunc, liftCalcPivotToFunc, defaultAggr
-export CalcPivot
+export liftAggrSpecToFunc, defaultAggr
 # Untrusted whitelist DSL
 export SafeAggrSpec, SafeDimSpec, parseaggr, parsedim, @aggr_str, @dim_str
 export registerop!, registerclassifier!, listops
@@ -59,7 +55,7 @@ export registerop!, registerclassifier!, listops
 export AggrHints, resolveaggr, aggrvalue, aggregate, pivottable
 # Dimensioning -- chains are the only public entry; the window/pivot kinds and
 # their types (WindowDim/PivotDim) are internals behind kind inference + dimspec
-export Dimension, dimspec, dim, dim!
+export dimspec, dim, dim!
 # Aggregation / presentation verbs
 export uniqvalue, unionall, strjoinuniq, discretize, topnames, quantiles, lag, lead
 
