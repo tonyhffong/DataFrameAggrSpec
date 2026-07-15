@@ -150,8 +150,8 @@ end
     @test dfm.share ≈ [10 / 60, 20 / 60, 1.0, 30 / 60, 1.0, 1.0]
     @test dfm.cum == [100, 200, 50, 230, 80, 20]
 
-    # pivottable over a mixed chain: trusted flag under a safe pivot key
-    out = pivottable(df, [:County,
+    # agg over a mixed chain: trusted flag under a safe pivot key
+    out = agg(df, [:County,
                           :top1 => dim"topnames(District, TestScr, 1)",
                           :flag => :( :TestScr .> 25.0 )];
                      hints = AggrHints(:TestScr => :sum))

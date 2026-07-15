@@ -165,8 +165,8 @@ end
     # AggrHints with a safe spec matches the trusted-Expr result
     h_safe = AggrHints(:TestScr => aggr"sum(_ * EnrlTot) / sum(EnrlTot)")
     h_expr = AggrHints(:TestScr => :( sum(:_ .* :EnrlTot) / sum(:EnrlTot) ))
-    @test aggregate(df, :County; hints = h_safe, cols = [:TestScr]).TestScr ==
-          aggregate(df, :County; hints = h_expr, cols = [:TestScr]).TestScr
+    @test agg(df, :County; hints = h_safe, cols = [:TestScr]).TestScr ==
+          agg(df, :County; hints = h_expr, cols = [:TestScr]).TestScr
 
     # lifted safe spec is a plain closure -- callable without invokelatest
     f = liftAggrSpecToFunc(:TestScr, parseaggr("mean(_)"))
@@ -183,8 +183,8 @@ end
     (keycols, dims) = DataFrameAggrSpec.normalize_chain(safe_chain)
     @test dims[1] isa PivotDim
     @test dims[1].by == [:District] && dims[1].context == [:County]
-    out_safe = pivottable(df, safe_chain)
-    out_expr = pivottable(df, [:County, :top1 => :( topnames(:District, :TestScr, 1) )])
+    out_safe = agg(df, safe_chain)
+    out_expr = agg(df, [:County, :top1 => :( topnames(:District, :TestScr, 1) )])
     @test isequal(string.(out_safe.top1), string.(out_expr.top1))
     @test isequal(out_safe.TestScr, out_expr.TestScr)
 
@@ -262,4 +262,64 @@ end
 
     @test repr(aggr"sum(_)") == "aggr\"sum(_)\""
     @test repr(dim"cumsum(x)") == "dim\"cumsum(x)\""
+end
+
+@testset "helpful errors" begin
+    # message-matching helper: thunk must throw an ErrorException whose
+    # message contains the needle
+    msg(f, needle) = begin
+        err = try
+            f()
+            nothing
+        catch e
+            e
+        end
+        err isa ErrorException && occursin(needle, err.msg)
+    end
+
+    # operator typos repair against the whitelist (OSA: transposition = 1 edit)
+    @test msg(() -> parseaggr("maen(_)"), "did you mean 'mean'?")
+    @test msg(() -> parseaggr("sum(qty) / coutn(qty)"), "did you mean 'count'?")
+    @test msg(() -> parsedim("cumsmu(sales)"), "did you mean 'cumsum'?")
+    @test msg(() -> parseaggr("maen"), "did you mean 'mean'?")   # bare-name form
+    # nothing close enough: fall back to the full-registry discovery message
+    @test msg(() -> parseaggr("ru(_)"), "Registered operations")
+
+    # modifier names in call position get the pattern reminder, not "unknown"
+    @test msg(() -> parsedim("orderby(date)"), "postfix modifier")
+    @test msg(() -> parsedim("orderby(date)"), "|> orderby(date)")
+    @test msg(() -> parseaggr("groupby(g)"), "postfix modifier")
+    # ... and misspelled/malformed modifiers repair or remind
+    @test msg(() -> parsedim("cumsum(x) |> orderb(d)"), "did you mean 'orderby'?")
+    @test msg(() -> parsedim("cumsum(x) |> orderby"), "takes columns")
+    @test msg(() -> parsedim("cumsum(x) |> groupb"), "did you mean 'groupby'?")
+
+    # aggr specs remind that modifiers belong to dim specs
+    @test msg(() -> parseaggr("sum(_) |> orderby(d)"), "dimension-spec")
+
+    # dim-spec shape errors explain the chain grammar
+    @test msg(() -> parsedim("sales"), "chain KEY")
+    @test msg(() -> parsedim("cumsum"), "write it as a call")
+
+    # column validation: the `columns` kwarg and standalone checkcols
+    avail = [:qty, :wt, :region, :date, :sales]
+    @test parseaggr("sum(_ * wt)"; columns = avail) isa SafeAggrSpec  # _ exempt
+    @test parseaggr("sum(qty)"; columns = avail) === parseaggr("sum(qty)")  # cache kept
+    @test msg(() -> parseaggr("sum(qtty)"; columns = avail), "did you mean 'qty'?")
+    @test msg(() -> parsedim("cumsum(sales) |> orderby(dat)"; columns = avail),
+              "did you mean 'date'?")                    # orderby cols validated
+    @test msg(() -> parsedim("mean(qty) |> groupby(regoin)"; columns = avail),
+              "did you mean 'region'?")                  # groupby keys validated
+    @test checkcols(parseaggr("sum(qty)"), avail) === parseaggr("sum(qty)")
+    @test msg(() -> checkcols(parseaggr("sum(zzzzz)"), avail), "Available columns")
+
+    # apply-time: agg keys, measure sources, and dim inputs all suggest
+    df = DataFrame(region = ["E", "W"], qty = [1, 2], sales = [1.0, 2.0])
+    @test msg(() -> agg(df, :regoin), "did you mean 'region'?")
+    @test msg(() -> agg(df, :region; cols = [:qtty => :sum => :x]),
+              "did you mean 'qty'?")
+    @test msg(() -> agg(df, ["region", ["r1", "cumsum(qtyy)"]]),
+              "dimension r1")
+    @test msg(() -> agg(df, ["region", ["r1", "cumsum(qtyy)"]]),
+              "did you mean 'qty'?")
 end

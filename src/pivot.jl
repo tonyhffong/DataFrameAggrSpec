@@ -1,44 +1,88 @@
-# aggregate: one row per group of keycols, every other requested column reduced
-# per its resolved aggregation spec. The non-UI core of TermWin's leaf aggregation.
-function aggregate(
+# agg: group-and-reduce over a CHAIN -- the single public aggregation verb.
+#
+# A chain entry is either a bare Symbol (an EXISTING key column) or a
+# `name => spec` declaration of an on-the-fly dimension (discretize / topnames
+# buckets, ...). Declared dimensions are materialized first, then every entry --
+# existing or computed -- serves as a grouping key; all remaining columns are
+# reduced by their resolved AggrHints spec, yielding one row per key combination.
+# So the caller never distinguishes "group by an existing column" from "group by
+# a derived one" -- both are just chain entries.
+#
+# `agg` is the reducing sibling of `dim`: `dim(df, chain)` ADDS the chain's
+# columns and keeps every row; `agg(df, chain)` groups by them and collapses.
+# `cols` selects and names the reductions (default: all non-key columns via
+# hints). Each entry is one output column, DataFrames.jl-style:
+#   :qty                          hints-resolved spec, output :qty
+#   :score => spec                inline spec override, output stays :score
+#   :score => spec => :score_avg  named measure -- the same source column may
+#                                 appear any number of times under distinct names
+# The spec slot takes anything liftAggrSpecToFunc takes (String = UNTRUSTED safe
+# grammar, Symbol/Expr/Function trusted, SafeAggrSpec); `_`/`:_` binds to the
+# left (source) column. Specs are never Pairs, so the forms are unambiguous.
+function normalize_measures(
     df::AbstractDataFrame,
-    keycols::AbstractVector{Symbol};
-    hints::AggrHints = AggrHints(),
-    cols::AbstractVector{Symbol} = setdiff(propertynames(df), keycols),
+    entries::AbstractVector,
+    keycols::AbstractVector{Symbol},
+    hints::AggrHints,
 )
-    funcs = Dict{Symbol,Function}(
-        c => liftAggrSpecToFunc(c, resolveaggr(hints, c, eltype(df[!, c]))) for c in cols
-    )
-    gd = groupby(df, collect(keycols); sort = false, skipmissing = false)
-    combine(gd) do sdf
-        # invokelatest: lifted aggregators live at a newer world age than this closure
-        DataFrame([c => [aggrvalue(Base.invokelatest(funcs[c], sdf))] for c in cols]...)
+    measures = @NamedTuple{out::Symbol, src::Symbol, func::Function}[]
+    for entry in entries
+        if isa(entry, Symbol)
+            out, src, spec = entry, entry, nothing
+        elseif isa(entry, Pair) && isa(entry.first, Symbol)
+            src = entry.first
+            if isa(entry.second, Pair)   # :src => spec => :out
+                spec = entry.second.first
+                out = entry.second.second
+                isa(out, Symbol) || error(
+                    "agg cols: output name in " * string(entry) * " must be a Symbol")
+            else                          # :src => spec
+                spec, out = entry.second, src
+            end
+        else
+            error("agg cols: entries must be a column Symbol, `col => spec`, or " *
+                  "`col => spec => outname`, got " * string(entry))
+        end
+        hasproperty(df, src) || error("agg cols: no column " * string(src) *
+                                      didyoumean(src, sort(propertynames(df))))
+        spec === nothing && (spec = resolveaggr(hints, src, eltype(df[!, src])))
+        out in keycols && error(
+            "agg cols: output name " * string(out) * " collides with a chain key")
+        any(m -> m.out == out, measures) && error(
+            "agg cols: duplicate output name " * string(out))
+        push!(measures, (out = out, src = src, func = liftAggrSpecToFunc(src, spec)))
     end
+    measures
 end
 
-aggregate(df::AbstractDataFrame, keycol::Symbol; kwargs...) =
-    aggregate(df, [keycol]; kwargs...)
-
-# pivottable: materialize a chain's inline dimensions, then aggregate every
-# remaining column over the full key list -- the one-call groupby-with-
-# on-the-fly-dimensions. The non-UI core of TermWin's pivot tree.
-function pivottable(
+function agg(
     df::AbstractDataFrame,
     chain::AbstractVector;
     hints::AggrHints = AggrHints(),
+    cols::Union{Nothing,AbstractVector} = nothing,
 )
     keycols, dims = normalize_chain(chain)
     if !isempty(dims)
         df = applydims!(copyframe(df), dims; hints = hints)
     end
-    aggregate(df, keycols; hints = hints)
+    for k in keycols   # fail here, not deep inside groupby
+        hasproperty(df, k) || error("agg: no key column " * string(k) *
+                                    didyoumean(k, sort(propertynames(df))))
+    end
+    entries = cols === nothing ? setdiff(propertynames(df), keycols) : cols
+    measures = normalize_measures(df, entries, keycols, hints)
+    gd = groupby(df, keycols; sort = false, skipmissing = false)
+    combine(gd) do sdf
+        # invokelatest: lifted aggregators live at a newer world age than this closure
+        DataFrame([m.out => [aggrvalue(Base.invokelatest(m.func, sdf))] for m in measures]...)
+    end
 end
 
-pivottable(df::AbstractDataFrame, key::Symbol; kwargs...) = pivottable(df, [key]; kwargs...)
+agg(df::AbstractDataFrame, key::Symbol; kwargs...) = agg(df, [key]; kwargs...)
 
 # ------------------------------------------------------------- transforms --
 # Curried forms return reusable callables, so pipelines compose:
-#   df |> dim(chain) |> pivottable(keys)      (t2 ∘ t1)(df)      df ∘ dim(chain)
+#   df |> dim(chain) |> agg(keys)      (t2 ∘ t1)(df)      df ∘ dim(chain)
 
 struct DimTransform
     specs::Tuple
@@ -51,11 +95,13 @@ end
 dim(chains::Union{Pair,AbstractVector}...; hints::AggrHints = AggrHints(),
     replace::Bool = false) = DimTransform(chains, hints, replace)
 
-struct PivotTransform
+struct AggTransform
     chain::Any
     hints::AggrHints
+    cols::Union{Nothing,Vector{Any}}
 end
-(t::PivotTransform)(df::AbstractDataFrame) = pivottable(df, t.chain; hints = t.hints)
+(t::AggTransform)(df::AbstractDataFrame) = agg(df, t.chain; hints = t.hints, cols = t.cols)
 
-pivottable(chain::Union{AbstractVector,Symbol}; hints::AggrHints = AggrHints()) =
-    PivotTransform(chain, hints)
+agg(chain::Union{AbstractVector,Symbol}; hints::AggrHints = AggrHints(),
+    cols::Union{Nothing,AbstractVector} = nothing) =
+    AggTransform(chain, hints, cols === nothing ? nothing : collect(Any, cols))

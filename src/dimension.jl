@@ -351,7 +351,15 @@ function apply_dimension!(
     df
 end
 
-# applydims!: internal apply loop over resolved dimensions
+# every column a dimension reads from the frame: the planner-facing
+# dependencies plus its partition/grouping keys
+required_columns(d::WindowDim) = union(dependencies(d), d.by)
+required_columns(d::PivotDim) = union(d.deps, d.by, d.context)
+
+# applydims!: internal apply loop over resolved dimensions. Missing inputs are
+# caught up front with a did-you-mean hint (the TUI path: a misspelled column
+# in a spec string would otherwise die deep inside groupby/indexing); later
+# dims legitimately see the columns earlier dims added.
 function applydims!(
     df::DataFrame,
     dims::Vector{AbstractDimension};
@@ -359,6 +367,11 @@ function applydims!(
     replace::Bool = false,
 )
     for d in dims
+        for c in required_columns(d)
+            hasproperty(df, c) || error(
+                "dimension " * string(d.name) * ": no column " * string(c) *
+                didyoumean(c, sort(propertynames(df))))
+        end
         apply_dimension!(df, d; hints = hints, replace = replace)
     end
     df

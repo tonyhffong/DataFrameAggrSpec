@@ -23,10 +23,11 @@ At the core of this package there are two operator pillars, one composition rule
   values are computed from *sibling rows*: rows sharing the same partition-key
   values (`dim"..."` specs, chains, `dim`).
 - **Aggregation** — operators that reduce a group of rows to one value per column
-  (`aggr"..."` specs, `AggrHints`, `aggregate`).
+  (`aggr"..."` specs, `AggrHints`, `agg`).
 - **Composition** — *chains* declare dimensions inline in a pivot list,
   partitioned by their **left context**; a declared dimension is immediately a
-  pivot key for what follows (`pivottable`).
+  pivot key for what follows. The same chain drives both verbs: `dim(df, chain)`
+  ADDS its columns, `agg(df, chain)` groups by them and reduces.
 
 ## Dimensioning
 
@@ -96,9 +97,9 @@ chain = [:County, #existing column, Country
          :scoreq => dim"discretize(TestScr, quantiles = [.25, .5, .75])"]
                     # row-level quartile within [:County, :top5d, :District]
 
-df2 = dim(df, chain)                 # just add the columns
-out = pivottable(df, chain; hints)   # or: materialize dims, then aggregate one
-                                     # row per key combination (hints: see below)
+df2 = dim(df, chain)          # just add the columns
+out = agg(df, chain; hints)   # or: group by the chain, one row per key
+                              # combination, other cols reduced (hints: see below)
 ```
 In the above example, by removing the first element `:County` the result becomes a state level
 statistics. 
@@ -114,7 +115,7 @@ More chain forms:
   ```julia
   df |> dim([:region, :share => dim"sales / sum(sales)"],
             [:region, :cum   => dim"cumsum(sales) |> orderby(date)"]) |>
-        pivottable([:region, :bucket => dim"quantiles(sales, [.5])"]; hints)
+        agg([:region, :bucket => dim"quantiles(sales, [.5])"]; hints)
   ```
 
   The syntax forces the distinction: if it's in a chain, it's a key; if it's a
@@ -144,21 +145,45 @@ single unique value):
 hints = AggrHints(:TestScr => aggr"sum(_ * EnrlTot) / sum(EnrlTot)",
                   AbstractString => aggr"uniqvalue")
 
-aggregate(df, [:County]; hints)      # one row per County, all other cols reduced
-pivottable(df, chain; hints)         # chain dims + aggregate over all chain keys
+agg(df, [:County]; hints)            # one row per County, all other cols reduced
+agg(df, chain; hints)                # group by chain keys (existing OR computed)
 ```
+
+`agg` takes a **chain**, exactly like `dim`: bare-symbol entries are existing key
+columns and `name => spec` entries are on-the-fly dimensions materialized before
+grouping — so `agg(df, [:County])` is a plain group-by and
+`agg(df, [:region, :bucket => dim"quantiles(sales, [.5])"])` groups by a derived
+bucket, with no separate "pivot" verb to remember.
+
+`cols =` selects **and names** the reductions (default: every non-key column
+via hints). Each entry is one output column, and the same source column may
+appear any number of times under distinct names:
+
+```julia
+agg(df, [:County]; cols = [
+    :EnrlTot,                                  # hints-resolved, output :EnrlTot
+    :TestScr => aggr"maximum(_)",              # inline spec, output stays :TestScr
+    :TestScr => aggr"mean(_)" => :scr_avg,     # named measure
+    :TestScr => aggr"std(_)"  => :scr_sd,      # ... same column again
+])
+```
+
+The spec slot takes anything a hint value takes — a safe `aggr"..."` / plain
+String, or a trusted Symbol / Expr / Function — and `_` binds to the source
+column on the left. Output columns appear in entry order; duplicate output
+names and collisions with chain keys are errors.
 
 The available reductions are listed in
 [docs/safe-aggregation-operators.md](docs/safe-aggregation-operators.md).
 
 ## Pipelines
 
-`dim(chain...; hints)` and `pivottable(chain; hints)` (no frame argument) return
-reusable callable transforms:
+`dim(chain...; hints)` and `agg(chain; hints, cols)` (no frame argument) return
+reusable callable transforms — `cols` measure entries ride along:
 
 ```julia
-report = pivottable([:region, :quartile => dim"discretize(sales, quantiles = [.25, .5, .75])"];
-                    hints = AggrHints(:sales => aggr"sum"))
+report = agg([:region, :quartile => dim"discretize(sales, quantiles = [.25, .5, .75])"];
+             hints = AggrHints(:sales => aggr"sum"))
 df |> report                          # apply
 df |> dim([:region, :z => dim"(sales - mean(sales)) / std(sales)"]) |> report
 (report ∘ dim([...]))(df)             # Base ∘ composes transforms
@@ -194,6 +219,24 @@ macros are compile-time sugar for the same thing).
 - one wrinkle of "bare identifier = column": `missing`, `pi`, `Inf` are
   identifiers, hence column references, not constants.
 
+**Errors are written for the person typing the spec.** Rejections repair the
+offending token against the known vocabulary (OSA / restricted
+Damerau-Levenshtein, so transpositions are one edit) and reply with a
+`did you mean '...'?` hint: `maen(_)` suggests `mean`, `|> orderb(d)` suggests
+`orderby`, and a misplaced `orderby(date)` gets the
+`"spec |> orderby(...)"` pattern reminder instead of "unknown function".
+Pass the frame's columns to get the same treatment for column references —
+`checkcols(spec, columns)` validates a parsed spec (including `orderby`/
+`groupby` columns), and the entry points take it as a kwarg:
+
+```julia
+parseaggr(usertext; columns = propertynames(df))   # sum(qtty) — did you mean 'qty'?
+```
+
+`agg` and `dim` make the equivalent checks at apply time (chain keys, measure
+sources, dimension inputs), so misspelled columns fail with a suggestion
+instead of a bare DataFrames indexing error.
+
 Hosts extend the whitelist deliberately, in code:
 
 ```julia
@@ -224,7 +267,7 @@ using StatsBase
 
 f = liftAggrSpecToFunc(:TestScr, :( StatsBase.mean(:_, StatsBase.Weights(:EnrlTot)) ))
 Base.invokelatest(f, df)     # raw lifted functions live at a fresh world-age;
-                             # aggregate / dim / pivottable handle this internally
+                             # agg / dim handle this internally
 
 liftAggrSpecToFunc(:TestScr, :sum)                # bare Symbol → sum(df.TestScr)
 hints = AggrHints(:TestScr => :( mean(:_, Weights(:EnrlTot)) ))
@@ -271,8 +314,8 @@ becomes the outer context.
 forms (`":date => :desc"`). Results are scattered back through the inverse
 permutation, so output stays aligned with the original rows.
 
-(`aggregate` is the primitive — `pivottable` ≡ materialize the chain's
-dimensions, then `aggregate` over the full key list.)
+(`agg` ≡ materialize the chain's declared dimensions, then group by the full key
+list and reduce — a pure-Symbol chain is just a plain group-by.)
 
 ## Presentation verbs
 

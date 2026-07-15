@@ -57,6 +57,6 @@ end
 
     # as an AggrHints spec in a grouped aggregation
     df = DataFrame(g = ["x", "x", "y"], name = ["b", "a", "c"])
-    out = aggregate(df, :g; hints = AggrHints(:name => aggr"strjoinuniq(_)"))
+    out = agg(df, :g; hints = AggrHints(:name => aggr"strjoinuniq(_)"))
     @test out.name == ["a,b", "c"]
 end

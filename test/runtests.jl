@@ -7,7 +7,7 @@ using Test
     @testset "aggregation-spec compiler" begin
         include("aggrspecs.jl")
     end
-    @testset "AggrHints + aggregate" begin
+    @testset "AggrHints + agg" begin
         include("hints.jl")
     end
     @testset "untrusted safe DSL" begin
@@ -28,7 +28,7 @@ using Test
     @testset "chains" begin
         include("chains.jl")
     end
-    @testset "pipeline (pivottable + transforms)" begin
+    @testset "pipeline (agg + transforms)" begin
         include("pipeline.jl")
     end
 end

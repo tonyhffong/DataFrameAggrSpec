@@ -10,10 +10,10 @@ pldf() = DataFrame(
     EnrlTot = [100, 100, 50, 30, 80, 20],
 )
 
-@testset "pivottable eager" begin
+@testset "agg eager" begin
     df = pldf()
     chain = [:County, :top1 => :( topnames(:District, :TestScr, 1) )]
-    out = pivottable(df, chain)
+    out = agg(df, chain)
 
     @test names(out)[1:2] == ["County", "top1"]
     @test nrow(out) == 4    # (C1,Others) (C1,"1. d2") (C2,"1. d4") (C2,Others)
@@ -24,8 +24,8 @@ pldf() = DataFrame(
     c1top = out[(out.County .== "C1") .& (string.(out.top1) .== "1. d2"), :]
     @test c1top.District == ["d2"]
 
-    # pure-key chain = plain hints-driven groupby/aggregate
-    out2 = pivottable(df, [:County];
+    # pure-key chain = plain hints-driven groupby/agg
+    out2 = agg(df, [:County];
                       hints = AggrHints(:TestScr =>
                           :( StatsBase.mean(:_, StatsBase.Weights(:EnrlTot)) )))
     c1 = out2[out2.County .== "C1", :]
@@ -33,7 +33,7 @@ pldf() = DataFrame(
                                        StatsBase.Weights([100, 100, 50, 30]))]
 
     # single-Symbol key convenience
-    @test pivottable(df, :County).EnrlTot == [280, 100]
+    @test agg(df, :County).EnrlTot == [280, 100]
 end
 
 @testset "curried transforms + composition" begin
@@ -41,17 +41,17 @@ end
     chain = [:County, :top1 => :( topnames(:District, :TestScr, 1) )]
 
     # |> pipeline
-    out = df |> pivottable(chain)
-    @test isequal(out, pivottable(df, chain))
+    out = df |> agg(chain)
+    @test isequal(out, agg(df, chain))
 
     # dim transform then pivot transform (etot: per-County enrollment total,
     # constant within group, carried through aggregation via :uniqvalue)
     h = AggrHints(:etot => :uniqvalue)
-    out2 = df |> dim([:County, :etot => :( sum(:EnrlTot) )]) |> pivottable([:County]; hints = h)
+    out2 = df |> dim([:County, :etot => :( sum(:EnrlTot) )]) |> agg([:County]; hints = h)
     @test out2.etot == [280, 100]
 
     # ∘ composition of transforms (right-to-left)
-    t = pivottable([:County]; hints = h) ∘ dim([:County, :etot => :( sum(:EnrlTot) )])
+    t = agg([:County]; hints = h) ∘ dim([:County, :etot => :( sum(:EnrlTot) )])
     @test isequal(t(df), out2)
 
     # single-pair transform applied via |>
@@ -66,6 +66,6 @@ end
 
     # SubDataFrame input
     sub = view(df, df.County .== "C1", :)
-    outsub = sub |> pivottable([:District])
+    outsub = sub |> agg([:District])
     @test nrow(outsub) == 3
 end

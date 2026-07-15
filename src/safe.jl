@@ -165,6 +165,34 @@ function colindex!(cols::Vector{Symbol}, c::Symbol)
     i === nothing ? (push!(cols, c); length(cols)) : i
 end
 
+# reminder shown when a modifier name is used (or repaired to) in call position
+modifier_reminder(m::Symbol) =
+    m == :orderby ?
+    "'orderby' is a postfix modifier, not a function -- write the spec " *
+    "first: \"cumsum(sales) |> orderby(date)\" (dim specs only)" :
+    "'groupby' is a postfix modifier, not a function -- write the spec " *
+    "first: \"mean(x) |> groupby(key)\" aggregates the measure per key " *
+    "before the verb classifies (dim specs only)"
+
+# unknown function in call position: modifier reminder, did-you-mean repair
+# against the whitelist, or the full registry as a last resort (it is the only
+# discovery mechanism when nothing is close)
+function unknown_op_error(what::String, fname::Symbol)
+    in(fname, SafeModifiers) && error(what * ": " * modifier_reminder(fname))
+    n = nearest(string(fname), vcat(listops(), collect(SafeModifiers)))
+    if n isa Symbol && in(n, SafeModifiers)
+        error(what * ": unknown function '" * string(fname) * "'. " *
+              modifier_reminder(n))
+    elseif n !== nothing
+        error(what * ": unknown function '" * string(fname) *
+              "' -- did you mean '" * string(n) * "'? (listops() shows the " *
+              "whitelist; hosts can extend it with registerop!.)")
+    end
+    error(what * ": unknown function '" * string(fname) *
+          "'. Registered operations: " * join(listops(), ", ") *
+          ". (Hosts can extend the whitelist with registerop!.)")
+end
+
 # compile a node to a thunk `vals::Tuple -> value`, where vals are the column
 # vectors in `cols` (first-encounter) order. Default-deny: only the node kinds
 # below exist in the untrusted language.
@@ -207,11 +235,7 @@ function compile_call(ex::Expr, cols::Vector{Symbol}, what::String)
     if op === nothing && startswith(string(fname), ".")
         op = get(SafeOps, Symbol(string(fname)[2:end]), nothing)
     end
-    if op === nothing
-        error(what * ": unknown function '" * string(fname) *
-              "'. Registered operations: " * join(listops(), ", ") *
-              ". (Hosts can extend the whitelist with registerop!.)")
-    end
+    op === nothing && unknown_op_error(what, fname)
     pts = Function[]                     # positional thunks, in order
     kts = Pair{Symbol,Function}[]        # keyword thunks
     for a in ex.args[2:end]
@@ -285,9 +309,17 @@ function peel_modifiers(ex, what::String)
                   string(lhs.args[1]) * "(...)\"")
         end
         if !ismodifiercall(rhs)
+            if isa(rhs, Symbol) && in(rhs, SafeModifiers)   # forgot the parens
+                error(what * ": " * string(rhs) * " takes columns -- write " *
+                      "\"spec " * string(combinator) * " " * string(rhs) *
+                      "(col, ...)\"")
+            end
+            hint = Base.Meta.isexpr(rhs, :call) && isa(rhs.args[1], Symbol) ?
+                   didyoumean(rhs.args[1], SafeModifiers) :
+                   isa(rhs, Symbol) ? didyoumean(rhs, SafeModifiers) : ""
             error(what * ": expected a modifier call (" *
                   join(string.(SafeModifiers), ", ") * ") after '" *
-                  string(combinator) * "', got " * string(rhs))
+                  string(combinator) * "', got " * string(rhs) * hint)
         end
         modname = rhs.args[1]
         args = rhs.args[2:end]
@@ -316,49 +348,96 @@ function peel_modifiers(ex, what::String)
     (ex, order, by)
 end
 
+# checkcols: validate a spec's column references against the columns a host
+# knows to exist (typically propertynames(df)), with did-you-mean repair --
+# the TUI path, where a misspelled column would otherwise surface much later
+# as a bare DataFrames indexing error. `_` is the aggregation target, not a
+# column reference. Returns the spec for chaining.
+function checkcols(s::Union{SafeAggrSpec,SafeDimSpec}, columns::AbstractVector{Symbol})
+    refs = isa(s, SafeAggrSpec) ? setdiff(s.cols, [:_]) :
+           union(s.cols, first.(s.order), s.by)
+    for c in refs
+        if !in(c, columns)
+            hint = didyoumean(c, sort(columns))
+            error("checkcols: spec \"" * s.source * "\" references column '" *
+                  string(c) * "', which does not exist" *
+                  (isempty(hint) ? ". Available columns: " *
+                                   join(sort(columns), ", ") : hint))
+        end
+    end
+    s
+end
+
 # repeated parses of the same string return the identical spec object
 const SafeSpecCache = Dict{Tuple{Symbol,String},Any}()
 
-function parseaggr(s::AbstractString)
-    src = String(strip(s))
-    get!(SafeSpecCache, (:aggr, src)) do
-        ex = safe_parse(src, "parseaggr")
-        if ismodifiershape(ex) && (ismodifiercall(ex.args[2]) || ismodifiercall(ex.args[3]))
-            error("parseaggr: modifiers (orderby, groupby) are dimension-spec " *
-                  "features; aggregation specs do not support them")
-        end
-        if isa(ex, Symbol)                   # aggr"sum" -- bare registered name
-            haskey(SafeOps, ex) ||
-                error("parseaggr: unknown function '" * string(ex) *
-                      "'. Registered operations: " * join(listops(), ", ") *
-                      ". (Hosts can extend the whitelist with registerop!.)")
-            ex = Expr(:call, ex, :_)         # lower to sum(_), like trusted :sum
-        end
-        isa(ex, Expr) && ex.head == :call ||
-            error("parseaggr: spec must be a function call or a registered " *
-                  "function name, got \"" * src * "\"")
-        cols = Symbol[]
-        thunk = compile_node(ex, cols, "parseaggr")
-        SafeAggrSpec(src, ex.args[1], (vs...) -> thunk(vs), cols)
+function parseaggr(
+    s::AbstractString;
+    columns::Union{Nothing,AbstractVector{Symbol}} = nothing,
+)
+    spec = get!(SafeSpecCache, (:aggr, String(strip(s)))) do
+        parseaggr_impl(String(strip(s)))
     end::SafeAggrSpec
+    # validated per call, outside the cache: the same spec may be checked
+    # against different frames
+    columns === nothing ? spec : checkcols(spec, columns)
 end
 
-function parsedim(s::AbstractString)
-    src = String(strip(s))
-    get!(SafeSpecCache, (:dim, src)) do
-        ex = safe_parse(src, "parsedim")
-        (ex, order, by) = peel_modifiers(ex, "parsedim")
-        isa(ex, Expr) && ex.head == :call ||
-            error("parsedim: spec must be a function call (e.g. \"cumsum(sales)\"), got \"" *
-                  src * "\"")
-        cols = Symbol[]
-        thunk = compile_node(ex, cols, "parsedim")
-        in(:_, cols) &&
-            error("parsedim: '_' is the aggregation target placeholder and has " *
-                  "no meaning in a dim spec")
-        posargs = Any[simple_posarg(a) for a in positional_args(ex)]
-        SafeDimSpec(src, ex.args[1], (vs...) -> thunk(vs), cols, posargs, order, by)
+function parseaggr_impl(src::String)
+    ex = safe_parse(src, "parseaggr")
+    if ismodifiershape(ex) && (ismodifiercall(ex.args[2]) || ismodifiercall(ex.args[3]))
+        error("parseaggr: modifiers (orderby, groupby) are dimension-spec " *
+              "features; an aggregation spec just reduces a column, e.g. " *
+              "\"sum(_ * wt) / sum(wt)\" -- ordering and grouping happen " *
+              "in the dim/agg call around it")
+    end
+    if isa(ex, Symbol)                   # aggr"sum" -- bare registered name
+        haskey(SafeOps, ex) || unknown_op_error("parseaggr", ex)
+        ex = Expr(:call, ex, :_)         # lower to sum(_), like trusted :sum
+    end
+    isa(ex, Expr) && ex.head == :call ||
+        error("parseaggr: spec must be a function call or a registered " *
+              "function name, got \"" * src * "\"")
+    cols = Symbol[]
+    thunk = compile_node(ex, cols, "parseaggr")
+    SafeAggrSpec(src, ex.args[1], (vs...) -> thunk(vs), cols)
+end
+
+function parsedim(
+    s::AbstractString;
+    columns::Union{Nothing,AbstractVector{Symbol}} = nothing,
+)
+    spec = get!(SafeSpecCache, (:dim, String(strip(s)))) do
+        parsedim_impl(String(strip(s)))
     end::SafeDimSpec
+    # validated per call, outside the cache: the same spec may be checked
+    # against different frames
+    columns === nothing ? spec : checkcols(spec, columns)
+end
+
+function parsedim_impl(src::String)
+    ex = safe_parse(src, "parsedim")
+    (ex, order, by) = peel_modifiers(ex, "parsedim")
+    if !(isa(ex, Expr) && ex.head == :call)
+        if isa(ex, Symbol) && haskey(SafeOps, ex)
+            error("parsedim: '" * src * "' is an operator name -- write it " *
+                  "as a call: \"" * src * "(col)\"")
+        elseif isa(ex, Symbol)
+            error("parsedim: a bare column name is a chain KEY, not a " *
+                  "dimension spec -- list it directly in the chain " *
+                  "([:region, :" * src * "]); a dim spec computes something, " *
+                  "e.g. \"cumsum(" * src * ")\"")
+        end
+        error("parsedim: spec must be a function call (e.g. \"cumsum(sales)\"), got \"" *
+              src * "\"")
+    end
+    cols = Symbol[]
+    thunk = compile_node(ex, cols, "parsedim")
+    in(:_, cols) &&
+        error("parsedim: '_' is the aggregation target placeholder and has " *
+              "no meaning in a dim spec")
+    posargs = Any[simple_posarg(a) for a in positional_args(ex)]
+    SafeDimSpec(src, ex.args[1], (vs...) -> thunk(vs), cols, posargs, order, by)
 end
 
 # string-macro sugar; expands to a runtime call so precompilation stays trivial,
