@@ -5,17 +5,18 @@ Specifications — supplied as `Symbol`s, `String`s, `Expr`s, spec objects, or
 lambdas at runtime — are compiled into functions over a `DataFrame`. Unlike
 [DataFramesMeta.jl](https://github.com/JuliaData/DataFramesMeta.jl), whose macros
 run at compile time, these specs can arrive from a GUI, a config file, or a
-database and be turned into working transforms on the fly.
-
-When developing an intuition about a dataframe, a user constantly needs to adjust and apply
-aggregation and pivoting (via static or on-the-fly dimensions) operations.
+database and be turned into working transforms on the fly. The motivation of 
+this package is from a data analytics perspective.
+When developing an intuition about a dataset, a user constantly needs to adjust and apply
+different aggregation and pivoting (via static or on-the-fly dimensions) operations. For examples,
 - What are the "top" categories given a measures? e.g. top scoring schools in a state.
 - Within a smaller context, what are the "top" categories then? e.g. top scoring schools within each country
 - What if I change the definition of "scores"?
-We want to easily change our queries without rewriting many lines of code,
-even better if we can change this via a GUI/TUI with one action.
+We want to easily change our queries without rewiring many lines of codes, many of them
+scattered across some distances when written in typical query languages.
 
-Abstraction of this layer is a natural extension of that need.
+The core design philosophy is thus "changing one small step in an analysis should only change 
+the code in a small, local and expressive way".
 
 At the core of this package there are two operator pillars, one composition rule:
 
@@ -62,8 +63,8 @@ dim(df, [:region, :share => dim"sales / sum(sales)"])
 #  W       1      5.0   0.1      ( 5 of W's 50)
 #  ...
 
-# running total within each region, accumulated in date order
-dim(df, [:region, :cum => dim"cumsum(sales) |> orderby(date)"])
+# running total within each region, accumulated in date order. Note the "∘" usage
+dim(df, [:region, :cum => dim"cumsum(sales) ∘ orderby(date)"])
 
 # label every row by its REGION's rank on total sales ("1. W", "2. E") --
 # the groups are ranked, and each member row receives its group's label
@@ -73,16 +74,18 @@ dim(df, [:rank => dim"topnames(region, sales, 2)"])
 dim(df, [:q => dim"quantiles(sales, [.25, .5])"])
 
 # same idea per GROUP: aggregate sales by region first, then bucket the regions
+# note that we use "|>" here instead of "∘". They are equivalent in this context.
 dim(df, [:rq => dim"quantiles(sales, [.5]) |> groupby(region)"])
 ```
 
 `dim` returns a new frame (the input is untouched); `dim!` adds the columns in
-place. Two postfix **modifiers** attach engine options to a spec (intent
-first, modifier after — `∘` is the pretty synonym; modifiers are metadata,
-never function calls): `spec |> orderby(cols...)` sorts the partition before
+place. Two postfix **modifiers** attach engine options to an intention spec 
+(our design favors putting intent first, modifier after).
+Here `spec |> orderby(cols...)` sorts the partition before
 an order-sensitive operator runs (`orderby(date => :desc)` for direction), and
-`spec |> groupby(keys...)` aggregates the measure at that granularity *first*
-so the verb classifies groups instead of rows — the table is never reduced;
+`spec |> groupby(keys...)` aggregates the measure at that `keys...` granularity *first*
+for all the rows that belong to the same keys
+so the verb classifies all these rows in one go — the table is never reduced;
 each group's label lands on all its member rows. The available operations are
 listed in [docs/safe-dimension-operators.md](docs/safe-dimension-operators.md).
 
@@ -124,7 +127,13 @@ out = agg(df, chain; hints)   # or: group by the chain, one row per key
 </p>
 
 In the above example, by removing the first element `:County` the result becomes a state level
-statistics. 
+statistics. Intuitively, this makes sense. When we remove some of the "left context" the universe of rows
+for each key combo to the left are larger so we would be ranking from a larger pool.
+
+More generally, the dynamically generated dimension link is also **portable**. We can move a link up and down
+the chain, compose with other dimension links, and they will always obey the
+left context rule and act accordingly. If we want to discretize first and then find the top districts within each 
+quantiles, we just swap them. That's it.
 
 More chain forms:
 
@@ -136,8 +145,8 @@ More chain forms:
 
   ```julia
   df |> dim([:region, :share => dim"sales / sum(sales)"],
-            [:region, :cum   => dim"cumsum(sales) |> orderby(date)"]) |>
-        agg([:region, :bucket => dim"quantiles(sales, [.5])"]; hints)
+            [:region, :cum   => dim"cumsum(sales) |> orderby(date)"]
+           ) |> agg([:region, :bucket => dim"quantiles(sales, [.5])"]; hints)
   ```
 
   The syntax forces the distinction: if it's in a chain, it's a key; if it's a
@@ -171,7 +180,7 @@ agg(df, [:County]; hints)            # one row per County, all other cols reduce
 agg(df, chain; hints)                # group by chain keys (existing OR computed)
 ```
 
-`agg` takes a **chain**, exactly like `dim`: bare-symbol entries are existing key
+`agg` takes a **chain** also, exactly like `dim`: bare-symbol entries are existing key
 columns and `name => spec` entries are on-the-fly dimensions materialized before
 grouping — so `agg(df, [:County])` is a plain group-by and
 `agg(df, [:region, :bucket => dim"quantiles(sales, [.5])"])` groups by a derived

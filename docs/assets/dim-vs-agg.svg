@@ -97,7 +97,8 @@
   <text class="cap muted" x="480" y="270">(same region); every row keeps its place</text>
 
   <!-- ============ agg path (bottom) ============ -->
-  <text class="mono code" x="48" y="332">agg(df, [:region]; cols = [:sales])</text>
+  <text class="mono code" x="250" y="395">agg(df, [:region];</text>
+  <text class="mono code" x="320" y="413">cols = [:sales])</text>
   <path class="arrow" d="M225,260 C320,260 400,362 468,362" marker-end="url(#ah)"/>
 
   <!-- agg result table -->

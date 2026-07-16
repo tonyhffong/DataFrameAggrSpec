@@ -1,4 +1,4 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 780 300" font-family="-apple-system, 'Segoe UI', Helvetica, Arial, sans-serif" role="img" aria-label="A chain is an ordered pivot list: each dimension is grouped by its left context and becomes a key for everything to its right">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 780 252" font-family="-apple-system, 'Segoe UI', Helvetica, Arial, sans-serif" role="img" aria-label="A chain is an ordered pivot list: each dimension is grouped by its left context and becomes a key for everything to its right">
   <style>
     :root { --fg:#1f2328; --muted:#59636e; --line:#d1d9e0; --box:#f6f8fa;
             --accent:#0969da; --accent-tint:rgba(9,105,218,.12); }
@@ -15,7 +15,6 @@
     .keybox { fill:var(--box); stroke:var(--line); stroke-width:1; }
     .dimbox { fill:var(--accent-tint); stroke:var(--accent); stroke-width:1; }
     .arrow { stroke:var(--muted); stroke-width:1.5; fill:none; }
-    .elbow { stroke:var(--muted); stroke-width:1.2; fill:none; }
   </style>
   <defs>
     <marker id="ah2" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
@@ -51,15 +50,14 @@
   </g>
 
   <!-- left context of :top5d -->
-  <path class="elbow" d="M242,134 L242,142 L50,142 L50,148" marker-end="url(#ah2)"/>
-  <rect x="10" y="152" width="80" height="8" rx="3" fill="var(--accent-tint)" stroke="var(--accent)" stroke-width="1"/>
-  <text class="cap" x="105" y="161">left context of <tspan class="mono">:top5d</tspan> = <tspan class="mono">[:County]</tspan><tspan class="muted"> — topnames ranks Districts per County</tspan></text>
+  <text class="cap" x="105" y="162">left context of <tspan class="mono">:top5d</tspan> = <tspan class="mono">[:County]</tspan></text>
+  <text class="cap muted" x="105" y="180">— topnames ranks Districts per County</text>
 
   <!-- left context of :scoreq -->
-  <path class="elbow" d="M650,134 L650,188 L250,188 L250,198" marker-end="url(#ah2)"/>
-  <rect x="10" y="204" width="480" height="8" rx="3" fill="var(--accent-tint)" stroke="var(--accent)" stroke-width="1"/>
-  <text class="cap" x="10" y="232">left context of <tspan class="mono">:scoreq</tspan> = <tspan class="mono">[:County, :top5d, :District]</tspan><tspan class="muted"> — quartiles computed within that partition</tspan></text>
+  <text class="cap" x="650" y="162" text-anchor="end">left context of <tspan class="mono">:scoreq</tspan> =</text>
+  <text class="cap mono" x="720" y="180" text-anchor="end">[:County, :top5d, :District]</text>
+  <text class="cap muted" x="720" y="198" text-anchor="end">— quartiles computed within that partition</text>
 
   <!-- bottom note -->
-  <text class="cap muted" x="10" y="276"><tspan class="mono" style="fill:var(--fg)">dim(df, chain)</tspan> adds :top5d and :scoreq&#160;&#160;·&#160;&#160;<tspan class="mono" style="fill:var(--fg)">agg(df, chain)</tspan> groups by all four keys and reduces the rest</text>
+  <text class="cap muted" x="10" y="236"><tspan class="mono" style="fill:var(--fg)">dim(df, chain)</tspan> adds :top5d and :scoreq&#160;&#160;·&#160;&#160;<tspan class="mono" style="fill:var(--fg)">agg(df, chain)</tspan> groups by all four keys and reduces the rest</text>
 </svg>
