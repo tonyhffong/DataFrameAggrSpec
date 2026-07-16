@@ -1,0 +1,65 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 780 300" font-family="-apple-system, 'Segoe UI', Helvetica, Arial, sans-serif" role="img" aria-label="A chain is an ordered pivot list: each dimension is grouped by its left context and becomes a key for everything to its right">
+  <style>
+    :root { --fg:#1f2328; --muted:#59636e; --line:#d1d9e0; --box:#f6f8fa;
+            --accent:#0969da; --accent-tint:rgba(9,105,218,.12); }
+    @media (prefers-color-scheme: dark) {
+      :root { --fg:#e6edf3; --muted:#9198a1; --line:#3d444d; --box:#151b23;
+              --accent:#4493f8; --accent-tint:rgba(68,147,248,.18); }
+    }
+    text { fill:var(--fg); }
+    .mono { font-family:ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+    .muted { fill:var(--muted); }
+    .accent { fill:var(--accent); }
+    .lbl { font-size:11px; }
+    .cap { font-size:12px; }
+    .keybox { fill:var(--box); stroke:var(--line); stroke-width:1; }
+    .dimbox { fill:var(--accent-tint); stroke:var(--accent); stroke-width:1; }
+    .arrow { stroke:var(--muted); stroke-width:1.5; fill:none; }
+    .elbow { stroke:var(--muted); stroke-width:1.2; fill:none; }
+  </style>
+  <defs>
+    <marker id="ah2" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" style="fill:var(--muted)"/>
+    </marker>
+  </defs>
+
+  <!-- forward arrow: declared dimension is a key downstream -->
+  <text class="cap muted" x="470" y="30" text-anchor="middle">…once declared, immediately a pivot key for everything to its right</text>
+  <path class="arrow" d="M370,74 C440,40 630,40 700,76" marker-end="url(#ah2)"/>
+
+  <!-- labels above boxes -->
+  <text class="lbl muted"  x="50"  y="66" text-anchor="middle">existing key</text>
+  <text class="lbl accent" x="242" y="66" text-anchor="middle">declares a dimension = new key</text>
+
+  <!-- chain entry boxes -->
+  <rect class="keybox" x="10"  y="78" width="80"  height="56" rx="8"/>
+  <rect class="dimbox" x="105" y="78" width="275" height="56" rx="8"/>
+  <rect class="keybox" x="400" y="78" width="90"  height="56" rx="8"/>
+  <rect class="dimbox" x="505" y="78" width="215" height="56" rx="8"/>
+  <g class="mono" font-size="12">
+    <text x="50"  y="110" text-anchor="middle">:County</text>
+    <text x="117" y="101">:top5d =&gt;</text>
+    <text x="117" y="119">dim"topnames(District, TestScr, 5)"</text>
+    <text x="445" y="110" text-anchor="middle">:District</text>
+    <text x="517" y="101">:scoreq =&gt;</text>
+    <text x="517" y="119">dim"discretize(TestScr, …)"</text>
+  </g>
+  <g class="mono muted" font-size="13">
+    <text x="97"  y="110" text-anchor="middle">,</text>
+    <text x="392" y="110" text-anchor="middle">,</text>
+    <text x="497" y="110" text-anchor="middle">,</text>
+  </g>
+
+  <!-- left context of :top5d -->
+  <path class="elbow" d="M242,134 L242,142 L50,142 L50,148" marker-end="url(#ah2)"/>
+  <rect x="10" y="152" width="80" height="8" rx="3" fill="var(--accent-tint)" stroke="var(--accent)" stroke-width="1"/>
+  <text class="cap" x="105" y="161">left context of <tspan class="mono">:top5d</tspan> = <tspan class="mono">[:County]</tspan><tspan class="muted"> — topnames ranks Districts per County</tspan></text>
+
+  <!-- left context of :scoreq -->
+  <path class="elbow" d="M650,134 L650,188 L250,188 L250,198" marker-end="url(#ah2)"/>
+  <rect x="10" y="204" width="480" height="8" rx="3" fill="var(--accent-tint)" stroke="var(--accent)" stroke-width="1"/>
+  <text class="cap" x="10" y="232">left context of <tspan class="mono">:scoreq</tspan> = <tspan class="mono">[:County, :top5d, :District]</tspan><tspan class="muted"> — quartiles computed within that partition</tspan></text>
+
+  <!-- bottom note -->
+  <text class="cap muted" x="10" y="276"><tspan class="mono" style="fill:var(--fg)">dim(df, chain)</tspan> adds :top5d and :scoreq&#160;&#160;·&#160;&#160;<tspan class="mono" style="fill:var(--fg)">agg(df, chain)</tspan> groups by all four keys and reduces the rest</text>
+</svg>

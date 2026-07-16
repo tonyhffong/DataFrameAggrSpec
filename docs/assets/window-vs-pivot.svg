@@ -1,0 +1,186 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 780 560" font-family="-apple-system, 'Segoe UI', Helvetica, Arial, sans-serif" role="img" aria-label="Window kind: a row's value is computed from its ordered sibling rows (orderby). Pivot kind: groups are aggregated, classified, and the labels broadcast back to member rows (groupby).">
+  <style>
+    :root { --fg:#1f2328; --muted:#59636e; --line:#d1d9e0; --box:#f6f8fa;
+            --accent:#0969da; --accent-tint:rgba(9,105,218,.12);
+            --tint-e:rgba(9,105,218,.08); --tint-w:rgba(154,103,0,.10); }
+    @media (prefers-color-scheme: dark) {
+      :root { --fg:#e6edf3; --muted:#9198a1; --line:#3d444d; --box:#151b23;
+              --accent:#4493f8; --accent-tint:rgba(68,147,248,.18);
+              --tint-e:rgba(68,147,248,.12); --tint-w:rgba(210,153,34,.16); }
+    }
+    text { fill:var(--fg); }
+    .mono { font-family:ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+    .muted { fill:var(--muted); }
+    .accent { fill:var(--accent); }
+    .cell { font-size:12px; }
+    .hdr  { font-size:12px; font-weight:600; }
+    .code { font-size:12.5px; }
+    .cap  { font-size:12px; }
+    .sm   { font-size:11px; }
+    .tline { stroke:var(--line); stroke-width:1; }
+    .arrow { stroke:var(--muted); stroke-width:1.5; fill:none; }
+  </style>
+  <defs>
+    <marker id="ah3" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" style="fill:var(--muted)"/>
+    </marker>
+  </defs>
+
+  <!-- divider -->
+  <line x1="390" y1="16" x2="390" y2="498" class="tline" stroke-dasharray="4 4"/>
+
+  <!-- ================= PANEL A : window ================= -->
+  <text x="16" y="30" font-size="14"><tspan font-weight="600">window kind</tspan><tspan class="muted" font-size="12"> — a row's value comes from its sibling rows</tspan></text>
+
+  <g class="mono code">
+    <text x="16"  y="54">dim(df, [:region,</text>
+    <text x="84"  y="72">:cum =&gt; dim"cumsum(sales)</text>
+    <text x="174" y="90"><tspan class="accent">|&gt; orderby(date)</tspan>"])</text>
+  </g>
+  <text class="sm muted" x="16" y="108">left context [:region] → siblings share a region</text>
+
+  <!-- source table (rows deliberately NOT in date order) -->
+  <rect x="16" y="142" width="175" height="24" fill="var(--tint-e)"/>
+  <rect x="16" y="166" width="175" height="24" fill="var(--tint-w)"/>
+  <rect x="16" y="190" width="175" height="24" fill="var(--tint-e)"/>
+  <rect x="16" y="214" width="175" height="24" fill="var(--tint-w)"/>
+  <rect x="16" y="238" width="175" height="24" fill="var(--tint-w)"/>
+  <rect x="16" y="118" width="175" height="144" fill="none" class="tline"/>
+  <line x1="16" y1="142" x2="191" y2="142" class="tline"/>
+  <line x1="16" y1="166" x2="191" y2="166" class="tline"/>
+  <line x1="16" y1="190" x2="191" y2="190" class="tline"/>
+  <line x1="16" y1="214" x2="191" y2="214" class="tline"/>
+  <line x1="16" y1="238" x2="191" y2="238" class="tline"/>
+  <line x1="76"  y1="118" x2="76"  y2="262" class="tline"/>
+  <line x1="126" y1="118" x2="126" y2="262" class="tline"/>
+  <text class="hdr" x="46"  y="134" text-anchor="middle">region</text>
+  <text class="hdr" x="101" y="134" text-anchor="middle">date</text>
+  <text class="hdr" x="158" y="134" text-anchor="middle">sales</text>
+  <g class="mono cell">
+    <text x="46" y="158" text-anchor="middle">E</text><text x="101" y="158" text-anchor="middle">2</text><text x="158" y="158" text-anchor="middle">20.0</text>
+    <text x="46" y="182" text-anchor="middle">W</text><text x="101" y="182" text-anchor="middle">3</text><text x="158" y="182" text-anchor="middle">30.0</text>
+    <text x="46" y="206" text-anchor="middle">E</text><text x="101" y="206" text-anchor="middle">1</text><text x="158" y="206" text-anchor="middle">10.0</text>
+    <text x="46" y="230" text-anchor="middle">W</text><text x="101" y="230" text-anchor="middle">1</text><text x="158" y="230" text-anchor="middle">5.0</text>
+    <text x="46" y="254" text-anchor="middle">W</text><text x="101" y="254" text-anchor="middle">2</text><text x="158" y="254" text-anchor="middle">15.0</text>
+  </g>
+
+  <!-- what the window spec sees -->
+  <text class="sm muted" x="205" y="160">the spec sees each partition's</text>
+  <text class="sm muted" x="205" y="176">siblings — W, sorted by date:</text>
+  <text class="sm mono"  x="205" y="196">sales  = [5, 15, 30]</text>
+  <text class="sm mono"  x="205" y="214">cumsum → [5, 20, 50]</text>
+  <text class="sm muted" x="205" y="236">…then values scatter back to</text>
+  <text class="sm muted" x="205" y="252">each row's original position</text>
+
+  <path class="arrow" d="M103,270 L103,296" marker-end="url(#ah3)"/>
+
+  <!-- result table -->
+  <rect x="191" y="302" width="65" height="144" fill="var(--accent-tint)"/>
+  <text class="accent" x="223" y="294" text-anchor="middle" font-size="11" font-weight="600">new</text>
+  <rect x="16" y="326" width="240" height="24" fill="var(--tint-e)"/>
+  <rect x="16" y="350" width="240" height="24" fill="var(--tint-w)"/>
+  <rect x="16" y="374" width="240" height="24" fill="var(--tint-e)"/>
+  <rect x="16" y="398" width="240" height="24" fill="var(--tint-w)"/>
+  <rect x="16" y="422" width="240" height="24" fill="var(--tint-w)"/>
+  <rect x="16" y="302" width="240" height="144" fill="none" class="tline"/>
+  <line x1="16" y1="326" x2="256" y2="326" class="tline"/>
+  <line x1="16" y1="350" x2="256" y2="350" class="tline"/>
+  <line x1="16" y1="374" x2="256" y2="374" class="tline"/>
+  <line x1="16" y1="398" x2="256" y2="398" class="tline"/>
+  <line x1="16" y1="422" x2="256" y2="422" class="tline"/>
+  <line x1="76"  y1="302" x2="76"  y2="446" class="tline"/>
+  <line x1="126" y1="302" x2="126" y2="446" class="tline"/>
+  <line x1="191" y1="302" x2="191" y2="446" class="tline"/>
+  <text class="hdr" x="46"  y="318" text-anchor="middle">region</text>
+  <text class="hdr" x="101" y="318" text-anchor="middle">date</text>
+  <text class="hdr" x="158" y="318" text-anchor="middle">sales</text>
+  <text class="hdr" x="223" y="318" text-anchor="middle">cum</text>
+  <g class="mono cell">
+    <text x="46" y="342" text-anchor="middle">E</text><text x="101" y="342" text-anchor="middle">2</text><text x="158" y="342" text-anchor="middle">20.0</text><text x="223" y="342" text-anchor="middle">30.0</text>
+    <text x="46" y="366" text-anchor="middle">W</text><text x="101" y="366" text-anchor="middle">3</text><text x="158" y="366" text-anchor="middle">30.0</text><text x="223" y="366" text-anchor="middle">50.0</text>
+    <text x="46" y="390" text-anchor="middle">E</text><text x="101" y="390" text-anchor="middle">1</text><text x="158" y="390" text-anchor="middle">10.0</text><text x="223" y="390" text-anchor="middle">10.0</text>
+    <text x="46" y="414" text-anchor="middle">W</text><text x="101" y="414" text-anchor="middle">1</text><text x="158" y="414" text-anchor="middle">5.0</text><text x="223" y="414" text-anchor="middle">5.0</text>
+    <text x="46" y="438" text-anchor="middle">W</text><text x="101" y="438" text-anchor="middle">2</text><text x="158" y="438" text-anchor="middle">15.0</text><text x="223" y="438" text-anchor="middle">20.0</text>
+  </g>
+
+  <text class="cap muted" x="16" y="474"><tspan class="mono accent">|&gt; orderby</tspan> — the window's one knob: the ORDER</text>
+  <text class="cap muted" x="16" y="490">of sibling rows; results scatter back to row positions</text>
+
+  <!-- ================= PANEL B : pivot ================= -->
+  <text x="416" y="30" font-size="14"><tspan font-weight="600">pivot kind</tspan><tspan class="muted" font-size="12"> — groups are classified; labels land on rows</tspan></text>
+
+  <g class="mono code">
+    <text x="416" y="54">dim(df, [</text>
+    <text x="484" y="72">:half =&gt; dim"quantiles(sales, [.5])</text>
+    <text x="581" y="90"><tspan class="accent">|&gt; groupby(region)</tspan>"])</text>
+  </g>
+  <text class="sm muted" x="416" y="108">no left context — groupby(region) forms the groups</text>
+
+  <!-- source table -->
+  <rect x="416" y="142" width="125" height="24" fill="var(--tint-e)"/>
+  <rect x="416" y="166" width="125" height="24" fill="var(--tint-w)"/>
+  <rect x="416" y="190" width="125" height="24" fill="var(--tint-e)"/>
+  <rect x="416" y="214" width="125" height="24" fill="var(--tint-w)"/>
+  <rect x="416" y="238" width="125" height="24" fill="var(--tint-w)"/>
+  <rect x="416" y="118" width="125" height="144" fill="none" class="tline"/>
+  <line x1="416" y1="142" x2="541" y2="142" class="tline"/>
+  <line x1="416" y1="166" x2="541" y2="166" class="tline"/>
+  <line x1="416" y1="190" x2="541" y2="190" class="tline"/>
+  <line x1="416" y1="214" x2="541" y2="214" class="tline"/>
+  <line x1="416" y1="238" x2="541" y2="238" class="tline"/>
+  <line x1="476" y1="118" x2="476" y2="262" class="tline"/>
+  <text class="hdr" x="446" y="134" text-anchor="middle">region</text>
+  <text class="hdr" x="508" y="134" text-anchor="middle">sales</text>
+  <g class="mono cell">
+    <text x="446" y="158" text-anchor="middle">E</text><text x="508" y="158" text-anchor="middle">20.0</text>
+    <text x="446" y="182" text-anchor="middle">W</text><text x="508" y="182" text-anchor="middle">30.0</text>
+    <text x="446" y="206" text-anchor="middle">E</text><text x="508" y="206" text-anchor="middle">10.0</text>
+    <text x="446" y="230" text-anchor="middle">W</text><text x="508" y="230" text-anchor="middle">5.0</text>
+    <text x="446" y="254" text-anchor="middle">W</text><text x="508" y="254" text-anchor="middle">15.0</text>
+  </g>
+
+  <!-- what the pivot spec sees -->
+  <text class="sm muted" x="555" y="152">rows grouped by region;</text>
+  <text class="sm muted" x="555" y="168">sales aggregated per group:</text>
+  <text class="sm mono"  x="555" y="188">E = 30, W = 50</text>
+  <text class="sm muted" x="555" y="208">quantiles labels the GROUPS:</text>
+  <text class="sm mono"  x="555" y="226">E → "1. [0%, 50%)"</text>
+  <text class="sm mono"  x="555" y="242">W → "2. [50%, 100%]"</text>
+  <text class="sm muted" x="555" y="260">labels broadcast to members</text>
+
+  <path class="arrow" d="M478,270 L478,296" marker-end="url(#ah3)"/>
+
+  <!-- result table -->
+  <rect x="541" y="302" width="120" height="144" fill="var(--accent-tint)"/>
+  <text class="accent" x="601" y="294" text-anchor="middle" font-size="11" font-weight="600">new</text>
+  <rect x="416" y="326" width="245" height="24" fill="var(--tint-e)"/>
+  <rect x="416" y="350" width="245" height="24" fill="var(--tint-w)"/>
+  <rect x="416" y="374" width="245" height="24" fill="var(--tint-e)"/>
+  <rect x="416" y="398" width="245" height="24" fill="var(--tint-w)"/>
+  <rect x="416" y="422" width="245" height="24" fill="var(--tint-w)"/>
+  <rect x="416" y="302" width="245" height="144" fill="none" class="tline"/>
+  <line x1="416" y1="326" x2="661" y2="326" class="tline"/>
+  <line x1="416" y1="350" x2="661" y2="350" class="tline"/>
+  <line x1="416" y1="374" x2="661" y2="374" class="tline"/>
+  <line x1="416" y1="398" x2="661" y2="398" class="tline"/>
+  <line x1="416" y1="422" x2="661" y2="422" class="tline"/>
+  <line x1="476" y1="302" x2="476" y2="446" class="tline"/>
+  <line x1="541" y1="302" x2="541" y2="446" class="tline"/>
+  <text class="hdr" x="446" y="318" text-anchor="middle">region</text>
+  <text class="hdr" x="508" y="318" text-anchor="middle">sales</text>
+  <text class="hdr" x="601" y="318" text-anchor="middle">half</text>
+  <g class="mono" font-size="11">
+    <text class="cell mono" x="446" y="342" text-anchor="middle" font-size="12">E</text><text class="cell mono" x="508" y="342" text-anchor="middle" font-size="12">20.0</text><text x="601" y="342" text-anchor="middle">1. [0%, 50%)</text>
+    <text class="cell mono" x="446" y="366" text-anchor="middle" font-size="12">W</text><text class="cell mono" x="508" y="366" text-anchor="middle" font-size="12">30.0</text><text x="601" y="366" text-anchor="middle">2. [50%, 100%]</text>
+    <text class="cell mono" x="446" y="390" text-anchor="middle" font-size="12">E</text><text class="cell mono" x="508" y="390" text-anchor="middle" font-size="12">10.0</text><text x="601" y="390" text-anchor="middle">1. [0%, 50%)</text>
+    <text class="cell mono" x="446" y="414" text-anchor="middle" font-size="12">W</text><text class="cell mono" x="508" y="414" text-anchor="middle" font-size="12">5.0</text><text x="601" y="414" text-anchor="middle">2. [50%, 100%]</text>
+    <text class="cell mono" x="446" y="438" text-anchor="middle" font-size="12">W</text><text class="cell mono" x="508" y="438" text-anchor="middle" font-size="12">15.0</text><text x="601" y="438" text-anchor="middle">2. [50%, 100%]</text>
+  </g>
+
+  <text class="cap muted" x="416" y="474"><tspan class="mono accent">|&gt; groupby</tspan> — the pivot's one knob: WHICH groups</text>
+  <text class="cap muted" x="416" y="490">get classified; labels broadcast — never reduces rows</text>
+
+  <!-- ================= shared mnemonic ================= -->
+  <text class="mono" x="390" y="528" text-anchor="middle" font-size="13">window : orderby&#160;&#160;::&#160;&#160;pivot : groupby</text>
+  <text class="cap muted" x="390" y="548" text-anchor="middle">one knob each — how sibling rows are ordered vs how groups are formed; either way, every row receives a value</text>
+</svg>

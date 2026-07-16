@@ -1,0 +1,119 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 760 480" font-family="-apple-system, 'Segoe UI', Helvetica, Arial, sans-serif" role="img" aria-label="dim adds sibling-computed columns; agg reduces to one row per key">
+  <style>
+    :root { --fg:#1f2328; --muted:#59636e; --line:#d1d9e0; --box:#f6f8fa;
+            --accent:#0969da; --accent-tint:rgba(9,105,218,.12);
+            --tint-e:rgba(9,105,218,.08); --tint-w:rgba(154,103,0,.10); }
+    @media (prefers-color-scheme: dark) {
+      :root { --fg:#e6edf3; --muted:#9198a1; --line:#3d444d; --box:#151b23;
+              --accent:#4493f8; --accent-tint:rgba(68,147,248,.18);
+              --tint-e:rgba(68,147,248,.12); --tint-w:rgba(210,153,34,.16); }
+    }
+    text { fill:var(--fg); }
+    .mono { font-family:ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+    .muted { fill:var(--muted); }
+    .accent { fill:var(--accent); }
+    .cell { font-size:12px; }
+    .hdr  { font-size:12px; font-weight:600; }
+    .code { font-size:12.5px; }
+    .cap  { font-size:12px; }
+    .tline { stroke:var(--line); stroke-width:1; }
+    .arrow { stroke:var(--muted); stroke-width:1.5; fill:none; }
+  </style>
+  <defs>
+    <marker id="ah" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" style="fill:var(--muted)"/>
+    </marker>
+  </defs>
+
+  <!-- ============ source table df ============ -->
+  <text class="mono muted" x="40" y="140" font-size="13">df</text>
+  <!-- row tints -->
+  <rect x="40" y="174" width="175" height="24" fill="var(--tint-e)"/>
+  <rect x="40" y="198" width="175" height="24" fill="var(--tint-e)"/>
+  <rect x="40" y="222" width="175" height="24" fill="var(--tint-w)"/>
+  <rect x="40" y="246" width="175" height="24" fill="var(--tint-w)"/>
+  <rect x="40" y="270" width="175" height="24" fill="var(--tint-w)"/>
+  <!-- grid -->
+  <rect x="40" y="150" width="175" height="144" fill="none" class="tline"/>
+  <line x1="40" y1="174" x2="215" y2="174" class="tline"/>
+  <line x1="40" y1="198" x2="215" y2="198" class="tline"/>
+  <line x1="40" y1="222" x2="215" y2="222" class="tline"/>
+  <line x1="40" y1="246" x2="215" y2="246" class="tline"/>
+  <line x1="40" y1="270" x2="215" y2="270" class="tline"/>
+  <line x1="100" y1="150" x2="100" y2="294" class="tline"/>
+  <line x1="150" y1="150" x2="150" y2="294" class="tline"/>
+  <!-- header -->
+  <text class="hdr" x="70"  y="166" text-anchor="middle">region</text>
+  <text class="hdr" x="125" y="166" text-anchor="middle">date</text>
+  <text class="hdr" x="182" y="166" text-anchor="middle">sales</text>
+  <!-- rows -->
+  <g class="mono cell">
+    <text x="70" y="190" text-anchor="middle">E</text><text x="125" y="190" text-anchor="middle">1</text><text x="182" y="190" text-anchor="middle">10.0</text>
+    <text x="70" y="214" text-anchor="middle">E</text><text x="125" y="214" text-anchor="middle">2</text><text x="182" y="214" text-anchor="middle">20.0</text>
+    <text x="70" y="238" text-anchor="middle">W</text><text x="125" y="238" text-anchor="middle">1</text><text x="182" y="238" text-anchor="middle">5.0</text>
+    <text x="70" y="262" text-anchor="middle">W</text><text x="125" y="262" text-anchor="middle">2</text><text x="182" y="262" text-anchor="middle">15.0</text>
+    <text x="70" y="286" text-anchor="middle">W</text><text x="125" y="286" text-anchor="middle">3</text><text x="182" y="286" text-anchor="middle">30.0</text>
+  </g>
+
+  <!-- ============ dim path (top) ============ -->
+  <text class="mono code" x="310" y="26">dim(df, [:region,</text>
+  <text class="mono code" x="377" y="44">:share =&gt; dim"sales / sum(sales)"])</text>
+  <path class="arrow" d="M225,185 C320,185 390,125 468,125" marker-end="url(#ah)"/>
+
+  <!-- dim result table -->
+  <rect x="655" y="70" width="75" height="144" fill="var(--accent-tint)"/>
+  <text class="accent" x="692" y="62" text-anchor="middle" font-size="11" font-weight="600">new</text>
+  <!-- row tints -->
+  <rect x="480" y="94"  width="175" height="24" fill="var(--tint-e)"/>
+  <rect x="480" y="118" width="175" height="24" fill="var(--tint-e)"/>
+  <rect x="480" y="142" width="175" height="24" fill="var(--tint-w)"/>
+  <rect x="480" y="166" width="175" height="24" fill="var(--tint-w)"/>
+  <rect x="480" y="190" width="175" height="24" fill="var(--tint-w)"/>
+  <!-- grid -->
+  <rect x="480" y="70" width="250" height="144" fill="none" class="tline"/>
+  <line x1="480" y1="94"  x2="730" y2="94"  class="tline"/>
+  <line x1="480" y1="118" x2="730" y2="118" class="tline"/>
+  <line x1="480" y1="142" x2="730" y2="142" class="tline"/>
+  <line x1="480" y1="166" x2="730" y2="166" class="tline"/>
+  <line x1="480" y1="190" x2="730" y2="190" class="tline"/>
+  <line x1="540" y1="70" x2="540" y2="214" class="tline"/>
+  <line x1="590" y1="70" x2="590" y2="214" class="tline"/>
+  <line x1="655" y1="70" x2="655" y2="214" class="tline"/>
+  <!-- header -->
+  <text class="hdr" x="510" y="86" text-anchor="middle">region</text>
+  <text class="hdr" x="565" y="86" text-anchor="middle">date</text>
+  <text class="hdr" x="622" y="86" text-anchor="middle">sales</text>
+  <text class="hdr" x="692" y="86" text-anchor="middle">share</text>
+  <!-- rows -->
+  <g class="mono cell">
+    <text x="510" y="110" text-anchor="middle">E</text><text x="565" y="110" text-anchor="middle">1</text><text x="622" y="110" text-anchor="middle">10.0</text><text x="692" y="110" text-anchor="middle">0.33</text>
+    <text x="510" y="134" text-anchor="middle">E</text><text x="565" y="134" text-anchor="middle">2</text><text x="622" y="134" text-anchor="middle">20.0</text><text x="692" y="134" text-anchor="middle">0.67</text>
+    <text x="510" y="158" text-anchor="middle">W</text><text x="565" y="158" text-anchor="middle">1</text><text x="622" y="158" text-anchor="middle">5.0</text><text x="692" y="158" text-anchor="middle">0.10</text>
+    <text x="510" y="182" text-anchor="middle">W</text><text x="565" y="182" text-anchor="middle">2</text><text x="622" y="182" text-anchor="middle">15.0</text><text x="692" y="182" text-anchor="middle">0.30</text>
+    <text x="510" y="206" text-anchor="middle">W</text><text x="565" y="206" text-anchor="middle">3</text><text x="622" y="206" text-anchor="middle">30.0</text><text x="692" y="206" text-anchor="middle">0.60</text>
+  </g>
+  <text class="cap muted" x="480" y="238"><tspan font-weight="600" style="fill:var(--fg)">dimensioning adds a column</tspan> —</text>
+  <text class="cap muted" x="480" y="254">values computed from sibling rows</text>
+  <text class="cap muted" x="480" y="270">(same region); every row keeps its place</text>
+
+  <!-- ============ agg path (bottom) ============ -->
+  <text class="mono code" x="48" y="332">agg(df, [:region]; cols = [:sales])</text>
+  <path class="arrow" d="M225,260 C320,260 400,362 468,362" marker-end="url(#ah)"/>
+
+  <!-- agg result table -->
+  <rect x="480" y="354" width="130" height="24" fill="var(--tint-e)"/>
+  <rect x="480" y="378" width="130" height="24" fill="var(--tint-w)"/>
+  <rect x="480" y="330" width="130" height="72" fill="none" class="tline"/>
+  <line x1="480" y1="354" x2="610" y2="354" class="tline"/>
+  <line x1="480" y1="378" x2="610" y2="378" class="tline"/>
+  <line x1="540" y1="330" x2="540" y2="402" class="tline"/>
+  <text class="hdr" x="510" y="346" text-anchor="middle">region</text>
+  <text class="hdr" x="575" y="346" text-anchor="middle">sales</text>
+  <g class="mono cell">
+    <text x="510" y="370" text-anchor="middle">E</text><text x="575" y="370" text-anchor="middle">30.0</text>
+    <text x="510" y="394" text-anchor="middle">W</text><text x="575" y="394" text-anchor="middle">50.0</text>
+  </g>
+  <text class="cap muted" x="480" y="426"><tspan font-weight="600" style="fill:var(--fg)">aggregation reduces rows</tspan> —</text>
+  <text class="cap muted" x="480" y="442">one row per key, other columns</text>
+  <text class="cap muted" x="480" y="458">reduced via hints / cols</text>
+</svg>

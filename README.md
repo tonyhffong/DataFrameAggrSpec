@@ -29,6 +29,11 @@ At the core of this package there are two operator pillars, one composition rule
   pivot key for what follows. The same chain drives both verbs: `dim(df, chain)`
   ADDS its columns, `agg(df, chain)` groups by them and reduces.
 
+<p align="center">
+  <img src="docs/assets/dim-vs-agg.svg" width="680"
+       alt="dim adds a sibling-computed column to every row; agg reduces to one row per key">
+</p>
+
 ## Dimensioning
 
 Dimensioning **adds new columns** to a DataFrame. What makes a *dimension*
@@ -81,6 +86,17 @@ so the verb classifies groups instead of rows — the table is never reduced;
 each group's label lands on all its member rows. The available operations are
 listed in [docs/safe-dimension-operators.md](docs/safe-dimension-operators.md).
 
+**Why two spellings for the same separator?** `spec ∘ orderby(date)` and
+`spec |> orderby(date)` mean exactly the same thing, and the redundancy is
+deliberate. `∘` is the more truthful glyph: a modifier is not a pipeline stage
+the data flows through — nothing is ever called — it *composes* with the spec,
+the way `g ∘ f` builds a new function without running either. It is also the
+more succinct on screen. But these specs arrive from TUI text fields and config
+files, where `\circ`-tab completion doesn't exist and a Unicode glyph is a real
+barrier — so the ASCII `|>` is accepted everywhere with identical meaning.
+Whichever you type, read it as "…with this engine option", not "pipe the data
+into `orderby`".
+
 ### Chains: dimensions become pivot keys
 
 The astute reader would have noticed that the `dim` always takes a vector in
@@ -101,6 +117,12 @@ df2 = dim(df, chain)          # just add the columns
 out = agg(df, chain; hints)   # or: group by the chain, one row per key
                               # combination, other cols reduced (hints: see below)
 ```
+
+<p align="center">
+  <img src="docs/assets/chain-context.svg" width="700"
+       alt="each dimension in a chain is grouped by its left context and immediately becomes a pivot key for everything to its right">
+</p>
+
 In the above example, by removing the first element `:County` the result becomes a state level
 statistics. 
 
@@ -300,6 +322,11 @@ construct:
   each group's label is broadcast back to its member rows. This is the home of
   `topnames` / `quantiles` / `discretize`-over-group-sums. Classifier verbs infer
   this kind (see `registerclassifier!`); force it with `dimspec(...; kind = :pivot)`.
+
+<p align="center">
+  <img src="docs/assets/window-vs-pivot.svg" width="700"
+       alt="window kind computes each row's value from its ordered sibling rows (the orderby modifier); pivot kind aggregates groups, classifies them, and broadcasts each label to the group's member rows (the groupby modifier)">
+</p>
 
 `dimspec(ex; by = extra_grouping_keys, order = ..., kind = :window | :pivot)`
 is the full options carrier — the Julia-side equivalent of the in-string
