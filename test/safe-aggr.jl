@@ -40,6 +40,16 @@ end
     @test aggr"std(_) / mean(_)".f(x) == Statistics.std(x) / 2.0      # coeff. of variation
 end
 
+@testset "ismissing / coalesce (aggregation side)" begin
+    # replace: elementwise coalesce before reducing (vs skipmissing = drop)
+    @test aggr"sum(coalesce(_, 0))".f([1.0, missing, 2.0]) == 3.0
+    # flag: missing-count as a measure
+    @test aggr"count(ismissing(_))".f([1, missing, missing]) == 2
+    # scalar broadcast: patch the missing that uniqvalue returns on mixed groups
+    @test aggr"coalesce(uniqvalue(_), \"mixed\")".f(["a", "b"]) == "mixed"
+    @test aggr"coalesce(uniqvalue(_), \"mixed\")".f(["a", "a"]) == "a"
+end
+
 @testset "countuniq" begin
     # verb semantics: count-distinct, uniqvalue's kwargs
     @test countuniq([1, 2, 2, 3]) == 3

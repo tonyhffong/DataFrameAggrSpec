@@ -117,6 +117,29 @@ Presence of `groupby` is what makes a spec pivot-kind. Verbs whose grouping
 column is data in the spec (`topnames`' 1st argument) imply their grouping and
 reject an additional `groupby`.
 
+## Date bucketing
+
+Coarser calendar buckets as **string labels whose lexical order is
+chronological order** (year first, zero-padded) — ready-made pivot keys.
+Each takes a single `Date`/`DateTime` column and applies elementwise;
+`missing` propagates. Cycle accessors (month-of-year, day-of-week) are
+deliberately *not* shipped — coarser buckets are what pivot keys need;
+`registerop!` any `Dates` accessor if a host wants seasonality.
+
+| Operator | Output | Example |
+|---|---|---|
+| `yyyy` | `"2025"` | `dim"yyyy(t)"` |
+| `yyyyq` | `"2025Q3"` | `dim"yyyyq(t)"` |
+| `yyq` | `"25Q3"` | `dim"yyq(t)"` |
+| `yyyymm` | `"202507"`; kwarg `delim` — `yyyymm(t, delim = "/")` → `"2025/07"` | `dim"yyyymm(t)"` |
+| `yymm` | `"2507"`; same `delim` kwarg | `dim"yymm(t, delim = \"-\")"` |
+
+```julia
+agg(df, [:ym => dim"yyyymm(t)"]; hints, allbut = [:t])
+# one row per CALENDAR month -- year boundaries handled correctly, unlike a
+# month-of-year accessor, which would conflate 2025-12 with 2026-12
+```
+
 ## Group-relative measures (window kind)
 
 Reductions return a scalar per partition; arithmetic broadcasts it back across
@@ -141,6 +164,14 @@ member row of the partition).
 - `abs` `log` `log2` `log10` `exp` `sqrt` `round` `floor` `ceil` `min` `max` —
   elementwise on columns: `dim"round(sales / sum(sales), digits = 2)"`,
   `dim"max(sales, 0)"`.
+- `ismissing` and `coalesce` — elementwise missing-value handling.
+  `dim"ismissing(comment)"` is a Bool pivot key
+  (`dim"where(ismissing(comment))"` labels it);
+  `dim"coalesce(phone_mobile, phone_home, 0)"` is a fallback cascade (first
+  non-missing wins; the default must be a literal — bare `missing` is a
+  column name). Under the Kleene `||`, `dim"ismissing(x) || x > 3"` is
+  correct on missing rows: `ismissing` rescues the branch that would
+  otherwise stay `missing`.
 - `+` `-` `*` `/` `^` and `==` `!=` `<` `<=` `>` `>=` `≠` `≤` `≥` and `!`
   (elementwise negation: `dim"!(a > b)"`, `dim"!flag"`) — broadcast semantics
   (dotted spellings `.+` `.<` ... are aliases). Comparison results are Bool

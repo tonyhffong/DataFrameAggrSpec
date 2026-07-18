@@ -46,7 +46,7 @@ i.e. they are *never* the last link:
    #  u1    0        0    5     3.0     (events at t=0,5)
    #  u1    1        60  57    12.0     (events at t=60,62)
    #  u2    0        0    0    16.0
-   #  u2    1        90  90    32.0     (gap: Real → default sum; use cols= to drop it)
+   #  u2    1        90  90    32.0     (gap: Real → default sum; 0.8.5+: drop it with allbut = [:gap])
    ```
 
    The session id *requires* ordering (a cumulative count of gap-breaks is

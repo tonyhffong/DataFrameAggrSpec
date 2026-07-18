@@ -39,6 +39,27 @@ given `where`, the flag/labeling use case is covered, and the residual numeric
 uses (cap-at-zero) have spellings already (`max(x, 0)`, `x * (x > 0)`) or a
 host `registerop!`. Do not re-propose `ifelse` without a new use case.
 
+**0.8.6 closed the last corner**: `ismissing` and `coalesce` ship as
+broadcast registry ops — the row-level missing trio is complete (drop =
+`skipmissing`, replace = `coalesce`, flag = `ismissing`), and
+`ismissing(x) || x > 3` composes correctly with the Kleene `||`.
+
+**Naming: why `coalesce` and not `replace_missing`/`fillmissing`**
+(owner-ratified, 2026-07): (a) the shipped registry is a *projection of
+Julia* — every Base-wrapping op keeps its Julia name, invented names are
+reserved for package-authored verbs; an alias would be the first exception
+and would break the colon-flip vocabulary portability across the trust
+boundary (the same words must work in `aggr"sum(coalesce(_, 0))"` and
+`:( sum(coalesce.(:_, 0)) )`). (b) `replace_missing` names only the arity-2
+corner: `coalesce` is an n-ary fallback cascade
+(`coalesce(phone_mobile, phone_home, 0)`), and the general operation deserves
+its general name. (c) Borrowed capital: SQL/dplyr/Spark all spell it
+`coalesce`, and SQL-literate users type it unprompted — with an alias-only
+registry their spelling would fail with no OSA repair possible. (d) House
+style has no underscores. The friendliness budget went into the docs (the
+drop/replace/flag framing), not the name. `fillmissing` was the strongest
+rejected alternative.
+
 Original analysis:
 
 "Flag rows where A and B", "cap at zero", "bucket manually with a condition"
@@ -150,18 +171,29 @@ there is nothing to sort") is slightly false once this case is seen: there
   which changes `agg` granularity as a side effect. Anticipated by
   `why-two-modifier-names.md`; if it ever hurts in TermWin, a third modifier
   (`|> within(cols...)`) is the natural shape. Known residual, fine as-is.
-- **`agg`'s `cols` is all-or-nothing.** To drop one column from the default
-  hints-driven reduction you must enumerate every other column —
-  `middle-windowpivot-usecase.md` trips on exactly this ("use `cols=` to drop
-  it"). A `drop = [:gap]` kwarg (or a rest marker) would be a small, local
-  addition true to the "change one small step locally" philosophy.
+- **`agg`'s `cols` is all-or-nothing.** RESOLVED in 0.8.5 as
+  `allbut = [:gap]` — the mirror image of `cols` (default hints-driven
+  reductions minus the listed columns; mutually exclusive with `cols`,
+  allbut columns must exist and must not be chain keys). `allbut` was chosen
+  over `drop` because it names the resulting *selection* rather than an
+  action: it reads as the intent ("aggregate all but gap") and makes the
+  mutual exclusivity with `cols` self-evident, where `drop` invites both the
+  "drop from the cols list?" composition misreading and row-dropping
+  connotations.
 - **No first-class row-count measure.** `cols = [:region => aggr"length(_)" => :n]`
   works (verified) but hijacking a key column to count rows is non-obvious; a
   documented idiom or an `nrow`-style measure entry would help.
-- **No date/time bucketing.** `year/month/quarter/dayofweek` (Dates is stdlib,
-  `bcast`-wrappable) are conspicuous absences — `discretize` covers numerics
-  only. Shipping them keeps the registration-free promise for the most common
-  time-series pivot keys.
+- **No date/time bucketing.** RESOLVED in 0.8.7, with an owner redesign:
+  NOT the Dates cycle accessors proposed below ("cycle is not a very useful
+  part of bucketing; coarser bucket is") but five package-authored label
+  verbs — `yyyy` `yyyyq` `yyq` `yyyymm` `yymm` (String output; `delim` kwarg
+  on the month forms). The formats are year-first and zero-padded, so
+  **lexical order is chronological order** — the same property the
+  rank-prefixed verb labels rely on — and coarser buckets handle year
+  boundaries correctly where a month-of-year accessor would conflate
+  2025-12 with 2026-12. Cycle accessors stay host-`registerop!` territory.
+  (Original analysis: `year/month/quarter/dayofweek` are `bcast`-wrappable
+  stdlib functions; `discretize` covers numerics only.)
 - **`quantiles(x, qs)` lacks an `ngroups` convenience** that `discretize` has
   ("quartiles" requires typing `[.25, .5, .75]`).
 

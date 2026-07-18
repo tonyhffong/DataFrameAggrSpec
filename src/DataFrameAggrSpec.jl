@@ -37,6 +37,7 @@ module DataFrameAggrSpec
 using DataFrames
 using CategoricalArrays
 using Statistics
+using Dates
 using Format
 using Base.Meta
 
@@ -62,5 +63,7 @@ export AggrHints, resolveaggr, aggrvalue, agg
 export dimspec, dim, dim!
 # Aggregation / presentation verbs
 export uniqvalue, countuniq, unionall, strjoinuniq, discretize, topnames, quantiles, lag, lead, where
+# Date-bucketing labels (lexical order = chronological order)
+export yyyy, yyyyq, yyq, yyyymm, yymm
 
 end # module

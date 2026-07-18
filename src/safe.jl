@@ -64,8 +64,18 @@ for f in (
     SafeOps[Symbol(f)] = f
 end
 
-for f in (abs, log, log2, log10, exp, sqrt, round, floor, ceil, min, max)
-    SafeOps[Symbol(f)] = bcast(f)   # scalar math applies elementwise to columns
+# scalar functions apply elementwise to columns. ismissing/coalesce are the
+# row-level missing tools (flag / replace -- skipmissing covers drop); they
+# ship under their Julia names on purpose: the registry is a projection of
+# Julia, so specs keep the same vocabulary across the trust boundary.
+for f in (abs, log, log2, log10, exp, sqrt, round, floor, ceil, min, max,
+          ismissing, coalesce)
+    SafeOps[Symbol(f)] = bcast(f)
+end
+
+# date-bucketing labels (verbs.jl): scalar verbs, elementwise over columns
+for f in (yyyy, yyyyq, yyq, yyyymm, yymm)
+    SafeOps[Symbol(f)] = bcast(f)
 end
 
 # operators: undotted and dotted spellings bind to the same broadcasting closure

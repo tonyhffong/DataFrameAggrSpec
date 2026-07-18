@@ -11,7 +11,9 @@
 # `agg` is the reducing sibling of `dim`: `dim(df, chain)` ADDS the chain's
 # columns and keeps every row; `agg(df, chain)` groups by them and collapses.
 # `cols` selects and names the reductions (default: all non-key columns via
-# hints). Each entry is one output column, DataFrames.jl-style:
+# hints); `allbut = [:gap]` is its mirror image -- the default hints-driven
+# set minus the listed columns (the two are mutually exclusive).
+# Each `cols` entry is one output column, DataFrames.jl-style:
 #   :qty                          hints-resolved spec, output :qty
 #   :score => spec                inline spec override, output stays :score
 #   :score => spec => :score_avg  named measure -- the same source column may
@@ -60,7 +62,14 @@ function agg(
     chain::AbstractVector;
     hints::AggrHints = AggrHints(),
     cols::Union{Nothing,AbstractVector} = nothing,
+    allbut::Union{Nothing,Symbol,AbstractVector} = nothing,
 )
+    # `allbut` is the mirror image of `cols`: keep the default hints-driven
+    # reduction for every non-key column EXCEPT these. Both are selection
+    # modes, so they are mutually exclusive -- an error, never precedence.
+    cols !== nothing && allbut !== nothing && error(
+        "agg: cols and allbut are mutually exclusive -- cols enumerates the " *
+        "measures, allbut excludes from the default (all non-key columns)")
     keycols, dims = normalize_chain(chain)
     if !isempty(dims)
         df = applydims!(copyframe(df), dims; hints = hints)
@@ -69,7 +78,18 @@ function agg(
         hasproperty(df, k) || error("agg: no key column " * string(k) *
                                     didyoumean(k, sort(propertynames(df))))
     end
-    entries = cols === nothing ? setdiff(propertynames(df), keycols) : cols
+    if allbut === nothing
+        entries = cols === nothing ? setdiff(propertynames(df), keycols) : cols
+    else
+        ab = tosyms(allbut)
+        for c in ab
+            hasproperty(df, c) || error("agg: allbut column " * string(c) *
+                " does not exist" * didyoumean(c, sort(propertynames(df))))
+            in(c, keycols) && error("agg: allbut excludes measures, but " *
+                string(c) * " is a chain key -- remove it from the chain instead")
+        end
+        entries = setdiff(propertynames(df), keycols, ab)
+    end
     measures = normalize_measures(df, entries, keycols, hints)
     gd = groupby(df, keycols; sort = false, skipmissing = false)
     combine(gd) do sdf
@@ -99,9 +119,14 @@ struct AggTransform
     chain::Any
     hints::AggrHints
     cols::Union{Nothing,Vector{Any}}
+    allbut::Union{Nothing,Vector{Symbol}}
 end
-(t::AggTransform)(df::AbstractDataFrame) = agg(df, t.chain; hints = t.hints, cols = t.cols)
+(t::AggTransform)(df::AbstractDataFrame) =
+    agg(df, t.chain; hints = t.hints, cols = t.cols, allbut = t.allbut)
 
 agg(chain::Union{AbstractVector,Symbol}; hints::AggrHints = AggrHints(),
-    cols::Union{Nothing,AbstractVector} = nothing) =
-    AggTransform(chain, hints, cols === nothing ? nothing : collect(Any, cols))
+    cols::Union{Nothing,AbstractVector} = nothing,
+    allbut::Union{Nothing,Symbol,AbstractVector} = nothing) =
+    AggTransform(chain, hints,
+                 cols === nothing ? nothing : collect(Any, cols),
+                 allbut === nothing ? nothing : tosyms(allbut))

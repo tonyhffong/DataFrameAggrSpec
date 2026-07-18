@@ -2,6 +2,7 @@ using DataFrameAggrSpec
 using DataFrames
 using CategoricalArrays
 using Statistics
+using Dates
 using Test
 
 import DataFrameAggrSpec: WindowDim, PivotDim, dependencies   # internals, white-box tests
@@ -121,6 +122,60 @@ end
     # ! negates elementwise, on comparisons and on Bool columns
     @test dim"!(a > 1)".f([0, 2]) == [true, false]
     @test dim"!flag".f([true, false]) == [false, true]
+end
+
+@testset "date bucketing verbs" begin
+    d = Date(2025, 7, 9)
+    @test yyyy(d) == "2025"
+    @test yyyyq(d) == "2025Q3"
+    @test yyq(d) == "25Q3"
+    @test yyyymm(d) == "202507"
+    @test yyyymm(d; delim = "/") == "2025/07"
+    @test yymm(d) == "2507"
+    @test yymm(d; delim = "-") == "25-07"
+    @test yyyymm(DateTime(2026, 1, 2, 13, 30)) == "202601"   # DateTime too
+    @test ismissing(yyyy(missing))
+    @test ismissing(yymm(missing; delim = "/"))
+
+    # elementwise through the DSL; missing propagates
+    ds = Union{Missing,Date}[Date(2025, 12, 31), missing, Date(2026, 1, 1)]
+    @test isequal(dim"yyyymm(t)".f(ds), ["202512", missing, "202601"])
+    @test dim"yyyymm(t, delim = \"/\")".f([d]) == ["2025/07"]
+    @test dim"yyq(t)".f([d]) == ["25Q3"]
+
+    # THE property: lexical order is chronological order
+    seq = [Date(2025, 9, 1), Date(2025, 10, 2), Date(2026, 2, 3)]
+    @test issorted(yyyy.(seq))
+    @test issorted(yyyyq.(seq))
+    @test issorted(yyyymm.(seq))
+    @test issorted(yyyymm.(seq, delim = "/"))
+
+    # as a chain key across a year boundary (calendar month, not month-of-year)
+    df = DataFrame(t = [Date(2025, 12, 30), Date(2025, 12, 31), Date(2026, 1, 5)],
+                   sales = [1.0, 2.0, 4.0])
+    out = agg(df, [:ym => dim"yyyymm(t)"]; allbut = [:t])
+    @test sort(out.ym) == ["202512", "202601"]
+    @test out.sales[sortperm(out.ym)] == [3.0, 4.0]
+end
+
+@testset "ismissing / coalesce (dimension side)" begin
+    # flag: a Bool pivot key, and it composes with !
+    @test isequal(dim"ismissing(x)".f([1, missing, 3]), [false, true, false])
+    @test dim"!ismissing(x)".f([1, missing]) == [true, false]
+
+    # replace: fallback cascade -- columns first, literal default last
+    @test isequal(dim"coalesce(a, b, 0)".f([1, missing, missing],
+                                           [10, 20, missing]),
+                  [1, 20, 0])
+
+    # Kleene interplay: ismissing rescues the missing branch of ||
+    @test isequal(dim"ismissing(x) || x > 3".f([1, missing, 5]),
+                  [false, true, true])
+
+    # self-labeling missing flag via where
+    lab = dim"where(ismissing(comment))".f(["a", missing])
+    @test string(lab[1]) == "Not ismissing(comment)"
+    @test string(lab[2]) == "ismissing(comment)"
 end
 
 @testset "where" begin

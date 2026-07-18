@@ -54,7 +54,14 @@ Whole-vector functions that produce the aggregate value.
 | `strjoinuniq` | unique non-missing values as strings, sorted and joined; `strjoinuniq(_, sep, limit)` with `sep = ","` and `limit = 128` characters (a trailing `…` marks truncation) | `aggr"strjoinuniq(_, \"; \", 64)"` |
 
 Reductions apply plain Julia semantics: a column containing `missing` makes
-`sum`/`mean`/… return `missing` — wrap in `skipmissing` when that is not wanted.
+`sum`/`mean`/… return `missing`. Three missing-value tools, by role:
+**drop** — `aggr"sum(skipmissing(_))"`; **replace** —
+`aggr"sum(coalesce(_, 0))"` (`coalesce` = first non-missing wins, elementwise,
+so fallbacks cascade: `coalesce(_, backup, 0)`); **flag** —
+`aggr"count(ismissing(_))"`. `coalesce` also patches missing *results*
+(`aggr"coalesce(uniqvalue(_), \"mixed\")"`). Defaults must be literals — bare
+`missing` is a column name in this grammar, so write `coalesce(x, 0)`, never
+`coalesce(x, missing)`.
 
 ## Combining reductions with arithmetic
 
@@ -80,7 +87,8 @@ aggr"std(_) / mean(_)"             # coefficient of variation
 applied elementwise to columns (`aggr"mean(log(_))"`,
 `aggr"sum(round(_, digits = 2))"`). `min`/`max` are the *binary* elementwise
 forms (`aggr"sum(max(_, 0))"` — clamp then sum); for the group extremum use
-`minimum`/`maximum`.
+`minimum`/`maximum`. `ismissing` and `coalesce` are the elementwise
+missing-value tools (see the drop/replace/flag note above).
 
 ## Extending the whitelist
 

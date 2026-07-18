@@ -221,6 +221,12 @@ String, or a trusted Symbol / Expr / Function — and `_` binds to the source
 column on the left. Output columns appear in entry order; duplicate output
 names and collisions with chain keys are errors.
 
+`allbut =` is the mirror image of `cols`: keep the default hints-driven
+reduction for every non-key column *except* the listed ones (the two are
+mutually exclusive — both are selection modes). It is the quickest way to
+shed a helper column, e.g. `agg(df, chain; hints, allbut = [:gap])` after a
+sessionization chain built from `gap`.
+
 The available reductions are listed in
 [docs/safe-aggregation-operators.md](docs/safe-aggregation-operators.md).
 
@@ -260,7 +266,8 @@ macros are compile-time sugar for the same thing).
 - whitelisted operations only: reductions (`sum mean median std var quantile
   minimum maximum count length first last …`), the package verbs (`topnames
   discretize quantiles where uniqvalue countuniq unionall strjoinuniq lag
-  lead`), `cumsum`/`cumprod`, and elementwise math (`abs log exp sqrt round …`).
+  lead`), date buckets (`yyyy yyyyq yyq yyyymm yymm`), `cumsum`/`cumprod`,
+  and elementwise math (`abs log exp sqrt round ismissing coalesce …`).
   `listops()` shows the registry; the full reference lives in the two
   [docs/](docs/) operator documents.
 - top-level `spec ∘ modifier(...)` / `spec |> modifier(...)` attaches engine
@@ -272,7 +279,8 @@ macros are compile-time sugar for the same thing).
 - everything else is rejected with a clear error: qualified names (`Core.eval`),
   macros, interpolation, lambdas, indexing, blocks, comprehensions, splats.
 - one wrinkle of "bare identifier = column": `missing`, `pi`, `Inf` are
-  identifiers, hence column references, not constants.
+  identifiers, hence column references, not constants — so missing-value
+  defaults are literals (`coalesce(x, 0)`, never `coalesce(x, missing)`).
 
 **Errors are written for the person typing the spec.** Rejections repair the
 offending token against the known vocabulary (OSA / restricted
@@ -395,6 +403,10 @@ list and reduce — a pure-Symbol chain is just a plain group-by.)
   order-based window dimensions.
 - **`uniqvalue`**, **`countuniq`**, **`unionall`** — the single unique value /
   count-distinct / flattened union.
+- **`yyyy` / `yyyyq` / `yyq` / `yyyymm` / `yymm`** — calendar-bucket labels
+  (`"2025Q3"`, `"202507"`, `delim` kwarg for `"2025/07"`) whose lexical order
+  is chronological order — coarser buckets, not cycles, so year boundaries
+  group correctly.
 
 ## Trust boundary
 

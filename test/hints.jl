@@ -63,6 +63,56 @@ end
     @test aggrvalue(DataFrame(a = [7])) == 7
 end
 
+@testset "allbut (the mirror of cols)" begin
+    df = DataFrame(
+        region = ["E", "E", "W", "W", "W"],
+        qty = [1, 2, 3, 4, 5],
+        wt = [1.0, 3.0, 1.0, 1.0, 2.0],
+        score = [10.0, 20.0, 30.0, 60.0, 30.0],
+    )
+
+    # default reductions minus the listed columns; entry order = column order
+    out = agg(df, [:region]; allbut = [:wt])
+    @test propertynames(out) == [:region, :qty, :score]
+    @test isequal(out, agg(df, [:region]; cols = [:qty, :score]))
+
+    # single-Symbol convenience
+    @test isequal(agg(df, :region; allbut = :wt), out)
+
+    # hints still drive the surviving columns
+    h = AggrHints(:score => aggr"maximum(_)")
+    outh = agg(df, :region; hints = h, allbut = [:qty, :wt])
+    @test propertynames(outh) == [:region, :score]
+    @test sort(outh.score) == [20.0, 60.0]
+
+    # THE motivating case (design/middle-windowpivot-usecase.md): drop a
+    # helper column that only existed to build a chain dimension
+    sess = DataFrame(user = ["u1", "u1", "u1", "u1", "u2", "u2"],
+                     t    = [0, 5, 60, 62, 0, 90],
+                     gap  = [0, 5, 55, 2, 0, 90],
+                     spend = [1.0, 2.0, 4.0, 8.0, 16.0, 32.0])
+    chain = [:user, :session => dim"cumsum(gap > 30) |> orderby(t)"]
+    s = agg(sess, chain; hints = AggrHints(:spend => aggr"sum", :t => aggr"minimum"),
+            allbut = [:gap])
+    @test propertynames(s) == [:user, :session, :t, :spend]
+    @test sort(s.spend) == [3.0, 12.0, 16.0, 32.0]
+
+    # curried transform carries allbut
+    tr = agg([:region]; allbut = :wt)
+    @test isequal(df |> tr, out)
+
+    # rejection matrix: selection modes are mutually exclusive; allbut columns
+    # must exist (did-you-mean) and must not be chain keys
+    @test_throws ErrorException agg(df, :region; cols = [:qty], allbut = [:wt])
+    err = try
+        agg(df, :region; allbut = [:qtty])
+    catch e
+        e
+    end
+    @test err isa ErrorException && occursin("did you mean 'qty'?", err.msg)
+    @test_throws ErrorException agg(df, :region; allbut = [:region])
+end
+
 @testset "named measures" begin
     df = DataFrame(
         region = ["E", "E", "W", "W", "W"],
