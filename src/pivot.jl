@@ -82,7 +82,7 @@ agg(df::AbstractDataFrame, key::Symbol; kwargs...) = agg(df, [key]; kwargs...)
 
 # ------------------------------------------------------------- transforms --
 # Curried forms return reusable callables, so pipelines compose:
-#   df |> dim(chain) |> agg(keys)      (t2 ∘ t1)(df)      df ∘ dim(chain)
+#   df |> dim(chain) |> agg(keys)      (t2 ∘ t1)(df)
 
 struct DimTransform
     specs::Tuple

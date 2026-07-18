@@ -5,14 +5,14 @@ Specifications — supplied as `Symbol`s, `String`s, `Expr`s, spec objects, or
 lambdas at runtime — are compiled into functions over a `DataFrame`. Unlike
 [DataFramesMeta.jl](https://github.com/JuliaData/DataFramesMeta.jl), whose macros
 run at compile time, these specs can arrive from a GUI, a config file, or a
-database and be turned into working transforms on the fly. The motivation of 
-this package is from a data analytics perspective.
+database and be turned into working transforms on the fly. The motivation  
+is coming from data analytics.
 When developing an intuition about a dataset, a user constantly needs to adjust and apply
 different aggregation and pivoting (via static or on-the-fly dimensions) operations. For examples,
 - What are the "top" categories given a measures? e.g. top scoring schools in a state.
 - Within a smaller context, what are the "top" categories then? e.g. top scoring schools within each country
 - What if I change the definition of "scores"?
-We want to easily change our queries without rewiring many lines of codes, many of them
+We want to easily change our queries without rewiring many lines of codes, 
 scattered across some distances when written in typical query languages.
 
 The core design philosophy is thus "changing one small step in an analysis should only change 
@@ -76,6 +76,10 @@ dim(df, [:q => dim"quantiles(sales, [.25, .5])"])
 # same idea per GROUP: aggregate sales by region first, then bucket the regions
 # note that we use "|>" here instead of "∘". They are equivalent in this context.
 dim(df, [:rq => dim"quantiles(sales, [.5]) |> groupby(region)"])
+
+# flag rows by a condition -- the label IS the condition, so the new column
+# reads as its own definition ("sales > 12" / "Not sales > 12")
+dim(df, [:big => dim"where(sales > 12)"])
 ```
 
 `dim` returns a new frame (the input is untouched); `dim!` adds the columns in
@@ -86,7 +90,18 @@ an order-sensitive operator runs (`orderby(date => :desc)` for direction), and
 `spec |> groupby(keys...)` aggregates the measure at that `keys...` granularity *first*
 for all the rows that belong to the same keys
 so the verb classifies all these rows in one go — the table is never reduced;
-each group's label lands on all its member rows. The available operations are
+each group's label lands on all its member rows. When both appear, `orderby`
+sorts the *groups* (by keys or their aggregates) before the verb runs —
+the Pareto idiom:
+
+```julia
+# running total over REGIONS, largest region first: every row carries the
+# cumulative sales of its region's "Pareto position"
+dim(df, [:cum => dim"cumsum(sales) |> groupby(region) |> orderby(sales => :desc)"])
+```
+
+Modifier textual order carries no meaning (`groupby |> orderby` ≡
+`orderby |> groupby` — they are options, like keyword arguments). The available operations are
 listed in [docs/safe-dimension-operators.md](docs/safe-dimension-operators.md).
 
 **Why two spellings for the same separator?** `spec ∘ orderby(date)` and
@@ -132,7 +147,9 @@ for each key combo to the left are larger so we would be ranking from a larger p
 
 More generally, the dynamically generated dimension link is also **portable**. We can move a link up and down
 the chain, compose with other dimension links, and they will always obey the
-left context rule and act accordingly. If we want to discretize first and then find the top districts within each 
+left context rule and act accordingly. Composition includes feeding one
+classifier's output to another: dimension labels are `CategoricalArray`s, and
+a classifier's name column accepts them (values are stringified as needed). If we want to discretize first and then find the top districts within each 
 quantiles, we just swap them. That's it.
 
 More chain forms:
@@ -233,10 +250,17 @@ macros are compile-time sugar for the same thing).
   `[...]` arrays; kwargs in either `f(x, k = v)` or `f(x; k = v)` form.
 - arithmetic (`+ - * / ^`) and comparisons are whitelisted with **broadcast
   semantics** — vector⊗scalar and vector⊗vector both work, no dots needed.
+- Boolean conditions combine with `&& || !` — pure, elementwise,
+  `missing`-propagating (Kleene; both sides always evaluated). `&&`/`||` bind
+  looser than comparisons, so `sales > 10 && sales < 20` needs no parens.
+  `where(cond)` turns a condition into readable labels whose default IS the
+  condition text: `dim"where(sales > 100)"` labels rows `"sales > 100"` /
+  `"Not sales > 100"` (customize via `true_label` / `false_label`); add
+  `|> groupby(keys...)` to flag groups by their aggregates.
 - whitelisted operations only: reductions (`sum mean median std var quantile
   minimum maximum count length first last …`), the package verbs (`topnames
-  discretize quantiles uniqvalue unionall strjoinuniq lag lead`),
-  `cumsum`/`cumprod`, and elementwise math (`abs log exp sqrt round …`).
+  discretize quantiles where uniqvalue countuniq unionall strjoinuniq lag
+  lead`), `cumsum`/`cumprod`, and elementwise math (`abs log exp sqrt round …`).
   `listops()` shows the registry; the full reference lives in the two
   [docs/](docs/) operator documents.
 - top-level `spec ∘ modifier(...)` / `spec |> modifier(...)` attaches engine
@@ -331,6 +355,8 @@ construct:
   each group's label is broadcast back to its member rows. This is the home of
   `topnames` / `quantiles` / `discretize`-over-group-sums. Classifier verbs infer
   this kind (see `registerclassifier!`); force it with `dimspec(...; kind = :pivot)`.
+  An `order` (in-string `|> orderby(...)`) sorts the *groups* — by keys or
+  their aggregates — before the spec runs, for cumulative/Pareto shapes.
 
 <p align="center">
   <img src="docs/assets/window-vs-pivot.svg" width="700"
@@ -367,7 +393,8 @@ list and reduce — a pure-Symbol chain is just a plain group-by.)
   length-capped display string.
 - **`lag(v, n; default)` / `lead(v, n; default)`** — shifted siblings, for
   order-based window dimensions.
-- **`uniqvalue`**, **`unionall`** — the single unique value / flattened union.
+- **`uniqvalue`**, **`countuniq`**, **`unionall`** — the single unique value /
+  count-distinct / flattened union.
 
 ## Trust boundary
 

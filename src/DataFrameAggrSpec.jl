@@ -61,6 +61,6 @@ export AggrHints, resolveaggr, aggrvalue, agg
 # their types (WindowDim/PivotDim) are internals behind kind inference + dimspec
 export dimspec, dim, dim!
 # Aggregation / presentation verbs
-export uniqvalue, unionall, strjoinuniq, discretize, topnames, quantiles, lag, lead
+export uniqvalue, countuniq, unionall, strjoinuniq, discretize, topnames, quantiles, lag, lead, where
 
 end # module

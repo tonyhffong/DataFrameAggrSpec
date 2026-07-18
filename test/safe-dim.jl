@@ -28,6 +28,7 @@ sddf() = DataFrame(
     @test dim"round(sales / sum(sales), digits = 2)".f([1.0, 2.0]) == [0.33, 0.67]
     @test dim"sales > mean(sales)".f([1.0, 3.0]) == [false, true]  # above-average flag
     @test dim"max(sales, 0)".f([-1.0, 2.0]) == [0.0, 2.0]          # elementwise clamp
+    @test dim"countuniq(District)".f(["a", "b", "a"]) == 2         # distinct count broadcast
 end
 
 @testset "discretize" begin
@@ -106,6 +107,72 @@ end
     @test_throws MethodError dim(df, [:bad => dim"quantiles(TestScr, [.5], [District])"])
 end
 
+@testset "Boolean operators (&&, ||, !)" begin
+    # && / || translate to pure elementwise and/or -- and bind looser than
+    # comparisons, so compound conditions need no parentheses
+    @test dim"a > 1 && a < 4".f([0, 2, 5]) == [false, true, false]
+    @test dim"a < 1 || a > 4".f([0, 2, 5]) == [true, false, true]
+    @test dim"a > 1 && a < 4 || a == 0".f([0, 2, 5]) == [true, true, false]
+
+    # Kleene logic: missing propagates instead of throwing
+    @test isequal(dim"a > 1 && b > 1".f([2, 2], [missing, 0]), [missing, false])
+    @test isequal(dim"a > 1 || b > 1".f([0, 0], [missing, 2]), [missing, true])
+
+    # ! negates elementwise, on comparisons and on Bool columns
+    @test dim"!(a > 1)".f([0, 2]) == [true, false]
+    @test dim"!flag".f([true, false]) == [false, true]
+end
+
+@testset "where" begin
+    # default labels are the condition's source text; missing labels missing
+    w = dim"where(sales > 100)"
+    @test w.fname == :where && w.cols == [:sales]
+    lab = w.f(Union{Missing,Float64}[50.0, 150.0, missing])
+    @test string(lab[1]) == "Not sales > 100"
+    @test string(lab[2]) == "sales > 100"
+    @test ismissing(lab[3])
+    @test lab isa CategoricalArray
+    @test levels(lab) == ["sales > 100", "Not sales > 100"]   # true sorts first
+
+    # custom labels; false_label derives from true_label
+    @test string.(dim"where(x > 0, true_label = \"pos\")".f([1, -1])) ==
+          ["pos", "Not pos"]
+    @test string.(dim"where(x > 0; true_label = \"pos\", false_label = \"neg\")".f([1, -1])) ==
+          ["pos", "neg"]
+
+    # compound condition inside where, label text included
+    cw = dim"where(x > 1 && x < 4)"
+    @test string.(cw.f([0, 2, 5])) ==
+          ["Not x > 1 && x < 4", "x > 1 && x < 4", "Not x > 1 && x < 4"]
+
+    # scalar (partition-level) condition returns the bare label to broadcast
+    @test dim"where(sum(sales) > 100)".f([60.0, 70.0]) == "sum(sales) > 100"
+    @test dim"where(sum(sales) > 100)".f([1.0, 2.0]) == "Not sum(sales) > 100"
+
+    # window kind end-to-end, and the flag as an agg key
+    df = DataFrame(region = ["E", "E", "W", "W", "W"],
+                   sales  = [10.0, 20.0, 5.0, 15.0, 30.0])
+    out = dim(df, [:big => dim"where(sales > 12)"])
+    @test string.(out.big) == ["Not sales > 12", "sales > 12", "Not sales > 12",
+                               "sales > 12", "sales > 12"]
+    r = agg(df, [:region, :big => dim"where(sales > 12)"]; cols = [:sales])
+    @test nrow(r) == 4
+    @test r.sales == [10.0, 20.0, 5.0, 45.0]   # (E,not) (E,big) (W,not) (W,big)
+
+    # pivot kind via the universal groupby modifier: flag GROUPS by their
+    # aggregates (district TestScr sums: C1 d1=30, d2=50, d3=30; C2 d4=40, d5=10)
+    dfx = sddf()
+    gb = dim(dfx, [:County, :bigd => dim"where(TestScr > 35) |> groupby(District)"])
+    @test string.(gb.bigd) == ["Not TestScr > 35", "Not TestScr > 35",
+                               "TestScr > 35", "Not TestScr > 35",
+                               "TestScr > 35", "Not TestScr > 35"]
+
+    # arity and label validation
+    @test_throws ErrorException parsedim("where()")
+    @test_throws ErrorException parsedim("where(a > 1, b > 1)")
+    @test_throws ErrorException dim"where(x > 1, true_label = \"a\", false_label = \"a\")".f([2])
+end
+
 @testset "orderby modifier (behavior)" begin
     df = DataFrame(region = ["E", "E", "W", "W", "W"],
                    date   = [1, 2, 1, 2, 3],
@@ -128,14 +195,72 @@ end
     @test_throws ErrorException dim(df, [:region,
         :x => dimspec(dim"cumsum(sales) |> orderby(date)"; order = :sales)])
 
-    # pivot kind rejects orderby (classifies group aggregates; nothing to sort)
-    @test_throws ErrorException DataFrameAggrSpec.normalize_chain(
-        [:bad => dim"topnames(region, sales, 2) |> orderby(date)"])
+    # orderby on a pivot dim is legal since 0.8.4: it means GROUP ordering
+    # (a no-op for order-insensitive verbs like topnames, same as a pointless
+    # orderby on a window sum)
+    (_, pdims) = DataFrameAggrSpec.normalize_chain(
+        [:t => dim"topnames(region, sales, 2) |> orderby(date)"])
+    @test pdims[1] isa PivotDim
+    @test pdims[1].order == [:date => false]
 
     # the orderby columns count as dependencies
     (_, dims) = DataFrameAggrSpec.normalize_chain(
         [:region, :cum => dim"cumsum(sales) |> orderby(date)"])
     @test dependencies(dims[1]) == [:sales, :date]
+end
+
+@testset "orderby on pivot dims (group ordering)" begin
+    # encounter order is W-first on purpose: sorting must be real, not luck
+    df = DataFrame(region = ["W", "W", "W", "E", "E"],
+                   date   = [1, 2, 3, 1, 2],
+                   sales  = [5.0, 15.0, 30.0, 10.0, 20.0])
+    # region sales sums: W = 50, E = 30
+
+    # THE Pareto idiom: running total over groups, largest group first
+    p = dim(df, [:cum => dim"cumsum(sales) |> groupby(region) |> orderby(sales => :desc)"])
+    @test p.cum == [50.0, 50.0, 50.0, 80.0, 80.0]
+
+    # ascending (smallest group first)
+    a = dim(df, [:cum => dim"cumsum(sales) |> groupby(region) |> orderby(sales)"])
+    @test a.cum == [80.0, 80.0, 80.0, 30.0, 30.0]
+
+    # ordering by the group KEY (E before W, though W is encountered first)
+    k = dim(df, [:cum => dim"cumsum(sales) |> groupby(region) |> orderby(region)"])
+    @test k.cum == [80.0, 80.0, 80.0, 30.0, 30.0]
+
+    # modifier textual order is NON-semantic (design/compound-modifiers.md)
+    q = dim(df, [:cum => dim"cumsum(sales) |> orderby(sales => :desc) |> groupby(region)"])
+    @test q.cum == p.cum
+
+    # dimspec is the Julia-side equivalent, for safe and trusted specs alike
+    j = dim(df, [:cum => dimspec(dim"cumsum(sales)";
+                                 by = :region, kind = :pivot, order = :sales => :desc)])
+    @test j.cum == p.cum
+    t = dim(df, [:cum => dimspec(:( cumsum(:sales) );
+                                 by = :region, kind = :pivot, order = :sales => :desc)])
+    @test t.cum == p.cum
+
+    # order column the spec never references: aggregated per hints, and a dependency
+    df2 = DataFrame(region = ["W", "W", "E"], sales = [1.0, 1.0, 5.0],
+                    profit = [1.0, 1.0, 9.0])
+    # sums: sales W=2, E=5 ; profit W=2, E=9 -> desc by profit puts E first
+    h = dim(df2, [:cum => dim"cumsum(sales) |> groupby(region) |> orderby(profit => :desc)"])
+    @test h.cum == [7.0, 7.0, 5.0]
+    (_, hd) = DataFrameAggrSpec.normalize_chain(
+        [:x => dim"cumsum(sales) |> groupby(region) |> orderby(profit)"])
+    @test dependencies(hd[1]) == [:sales, :profit]
+
+    # context partitioning: per County, districts sorted by their sums desc
+    # C1 sums: d2=50, then the d1=30/d3=30 tie stays stable (d1 first)
+    #   -> cum: d2=50, d1=80, d3=110 ; C2: d4=40 -> 40, d5 -> 50
+    dfx = sddf()
+    c = dim(dfx, [:County,
+                  :cum => dim"cumsum(TestScr) |> groupby(District) |> orderby(TestScr => :desc)"])
+    @test c.cum == [80.0, 80.0, 50.0, 110.0, 40.0, 50.0]
+
+    # conflicts are still errors: order in-string AND via dimspec
+    @test_throws ErrorException DataFrameAggrSpec.normalize_chain([:bad =>
+        dimspec(dim"cumsum(sales) |> groupby(region) |> orderby(date)"; order = :sales)])
 end
 
 @testset "groupby modifier (behavior)" begin
@@ -178,8 +303,9 @@ end
         dimspec(dim"discretize(EnrlTot, [35]) |> groupby(District)"; by = :County)])
     @test_throws ErrorException DataFrameAggrSpec.normalize_chain(
         [:bad => dim"topnames(District, TestScr, 5) |> groupby(County)"])
-    @test_throws ErrorException DataFrameAggrSpec.normalize_chain(
-        [:bad => dim"discretize(EnrlTot, [35]) |> groupby(District) |> orderby(TestScr)"])
+    gob = DataFrameAggrSpec.normalize_chain(
+        [:ok => dim"discretize(EnrlTot, [35]) |> groupby(District) |> orderby(TestScr)"])[2][1]
+    @test gob.by == [:District] && gob.order == [:TestScr => false]   # both modifiers
     @test_throws ErrorException dim(df, [:bad =>
         dimspec(dim"discretize(EnrlTot, [35]) |> groupby(District)"; kind = :window)])
 end

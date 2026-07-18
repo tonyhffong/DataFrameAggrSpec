@@ -194,11 +194,14 @@ struct PivotDim <: AbstractDimension
     by::Vector{Symbol}       # inner grouping keys (the groups being classified)
     context::Vector{Symbol}  # outer partition: classification runs per context group
     deps::Vector{Symbol}     # referenced non-key columns, aggregated per inner group
+    order::Vector{Pair{Symbol,Bool}}  # GROUP-level ordering: sort the inner
+                             # groups (by keys or aggregated deps) before the
+                             # kernel runs -- the Pareto idiom. Empty = groups
+                             # arrive in encounter order.
 end
 
 # grouping keys implied by classifier verbs (ClassifierVerbs table, safe.jl),
-# auto-added to a PivotDim's `by` -- e.g. topnames' name column (argument 1),
-# quantiles' grouping-column array (argument 3)
+# auto-added to a PivotDim's `by` -- e.g. topnames' name column (argument 1)
 expr_sym(a) =
     isa(a, QuoteNode) && isa(a.value, Symbol) ? a.value :
     Base.Meta.isexpr(a, :quote, 1) && isa(a.args[1], Symbol) ? a.args[1] : nothing
@@ -230,17 +233,25 @@ function PivotDim(
     spec::Union{Expr,AbstractString,SafeDimSpec};
     by = Symbol[],
     context = Symbol[],
+    order = Pair{Symbol,Bool}[],
 )
     if isa(spec, AbstractString)
         spec = parsedim(spec)   # Strings are UNTRUSTED: safe whitelist grammar
     end
+    orderv = normalize_order(order)
     if isa(spec, SafeDimSpec)
-        isempty(spec.order) || error(
-            "PivotDim " * string(name) * ": orderby applies to window " *
-            "dimensions; pivot kind classifies group aggregates",
-        )
         fname = spec.fname
         refs = copy(spec.cols)
+        if !isempty(spec.order)   # from a peeled `... |> orderby(cols...)`
+            if isempty(orderv)
+                orderv = spec.order
+            else
+                error(
+                    "PivotDim " * string(name) * ": order given both in the " *
+                    "spec string (orderby) and via dimspec/order",
+                )
+            end
+        end
     else
         fname = check_spec_call(spec, "PivotDim")
         refs = referenced_columns(spec)
@@ -269,14 +280,19 @@ function PivotDim(
         in(k, byv) || push!(byv, k)
     end
     isempty(byv) && error("PivotDim " * string(name) * ": non-empty `by` required")
-    deps = setdiff(refs, union(byv, ctxv))
-    PivotDim(name, spec, byv, ctxv, deps)
+    # order columns are dependencies too: non-key order columns get aggregated
+    # per hints exactly like spec references (the group-level sort needs them)
+    deps = setdiff(union(refs, Symbol[p.first for p in orderv]), union(byv, ctxv))
+    PivotDim(name, spec, byv, ctxv, deps, orderv)
 end
 
 dependencies(d::PivotDim) = d.deps
 
 function pivot_values(df::AbstractDataFrame, d::PivotDim, hints::AggrHints)
     kernelf, cols = kernel(d.spec)
+    ocols = Symbol[p.first for p in d.order]
+    orevs = Bool[p.second for p in d.order]
+    need = union(cols, ocols)   # group-level values: spec refs ∪ order columns
     aggrfuncs = Dict{Symbol,Function}(
         c => liftAggrSpecToFunc(c, resolveaggr(hints, c, eltype(df[!, c]))) for c in d.deps
     )
@@ -290,13 +306,30 @@ function pivot_values(df::AbstractDataFrame, d::PivotDim, hints::AggrHints)
         # one row per inner group: key columns take the group value,
         # dep columns are aggregated with the resolved hints
         colvals = Dict{Symbol,Any}()
-        for c in cols
+        for c in need
             if c in d.deps
                 # invokelatest: lifted aggregators live at a newer world age
                 colvals[c] = [aggrvalue(Base.invokelatest(aggrfuncs[c], g)) for g in gd]
             else
-                colvals[c] = [first(g[!, c]) for g in gd]
+                # key columns may be categorical (e.g. an earlier classifier's
+                # output); unwrap so the verb sees plain values, not
+                # CategoricalValues (unwrap is identity on everything else)
+                colvals[c] = [unwrap(first(g[!, c])) for g in gd]
             end
+        end
+        # `orderby` on a pivot dim sorts the GROUPS before the kernel runs
+        # (group keys or hint-aggregated measures -- the Pareto idiom); labels
+        # scatter back through the inverse permutation, the same idiom as
+        # window ordering one level down. Textual modifier order is
+        # non-semantic (design/compound-modifiers.md).
+        pos = 1:ng                       # group index -> kernel input position
+        if !isempty(d.order)
+            odf = DataFrame(AbstractVector[colvals[oc] for oc in ocols], ocols)
+            perm = sortperm(odf, ocols, rev = orevs)
+            for c in need
+                colvals[c] = colvals[c][perm]
+            end
+            pos = invperm(perm)
         end
         labels = Base.invokelatest(kernelf, Any[colvals[c] for c in cols]...)
         if !(isa(labels, AbstractVector) && length(labels) == ng)
@@ -310,7 +343,7 @@ function pivot_values(df::AbstractDataFrame, d::PivotDim, hints::AggrHints)
             labels = unwrap.(labels)
         end
         for (i, g) in enumerate(gidx)
-            out[ctxidxs[i]] = labels[g]
+            out[ctxidxs[i]] = labels[pos[g]]
         end
     end
     # re-wrap as categorical: verb labels carry zero-padded rank prefixes, so the

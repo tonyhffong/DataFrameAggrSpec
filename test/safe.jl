@@ -70,7 +70,8 @@ end
     @test g1.fname == :discretize && g1.cols == [:EnrlTot]
     @test dim"mean(TestScr) |> groupby(District, County)".by == [:District, :County]
 
-    # both modifiers parse together (kind conflict is a construction-time error)
+    # both modifiers parse together (groupby -> pivot kind, orderby -> group
+    # ordering; textual order is non-semantic, see design/compound-modifiers.md)
     gb = dim"discretize(x, [1]) |> groupby(g) |> orderby(d)"
     @test gb.by == [:g] && gb.order == [:d => false]
 
@@ -121,8 +122,12 @@ end
     @test reject("df[1, 1]", "function call")            # top-level :ref fails shape check
     @test reject("sum(df[1, 1])", "indexing")            # nested :ref gets tailored message
     @test reject("sum(x -> x)", "anonymous functions")
-    @test reject("sum(a && b)", "&&")
+    # & / | are not registered: the error redirects to the && / || translation
+    @test reject("(a > 1) & (b < 2)", "combine conditions with '&&'")
+    @test reject("(a > 1) .| (b < 2)", "combine conditions with '||'")
     @test reject("sum(a < b < c)", "chained comparisons")
+    @test reject("sum(a < b < c)", "&&")   # ... and teaches the && spelling
+    @test reject("8 < sales < 25", "&&")   # top-level form gets the same lesson
     @test reject("sum([i for i in x])", "comprehensions")
     @test reject("a; b", "one expression only")
     @test reject("sum(x...)", "splatting")

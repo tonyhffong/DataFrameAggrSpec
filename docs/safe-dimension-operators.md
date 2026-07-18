@@ -20,6 +20,12 @@ modified.
   numbers, strings, `true`/`false`, `[ ... ]` arrays
 - kwargs in either form: `f(x, k = v)` or `f(x; k = v)`
 - no dots needed for arithmetic — operators broadcast
+- Boolean conditions combine with `&&`, `||`, `!` — pure elementwise over
+  columns (Kleene: `missing` propagates, both sides always evaluated — nothing
+  short-circuits, there is no control flow here). `&&`/`||` bind **looser**
+  than comparisons, so `a > 1 && b < 2` needs no parentheses. `&`/`|` are
+  deliberately not operators (the error redirects); `&&`/`||` are grammar, not
+  registry entries, so they do not appear in `listops()`.
 
 ## Two evaluation kinds
 
@@ -40,9 +46,10 @@ to window. Force the kind (and attach ordering or extra grouping keys) with
 
 | Operator | Meaning | Example |
 |---|---|---|
-| `topnames` | top-N labels `"1. name"`, ties via `dense`, rest bucketed as `others`; kwargs `absolute`, `ranksep`, `dense`, `tol`, `others`, `parens` | `dim"topnames(District, TestScr, 5)"` |
+| `topnames` | top-N labels `"1. name"`, ties via `dense`, rest bucketed as `others`; kwargs `absolute`, `ranksep`, `dense`, `tol`, `others`, `parens`. The name column may be any value type — values are stringified, so categorical columns (including another classifier's output) and integer ids rank; missing names land in `others` | `dim"topnames(District, TestScr, 5)"` |
 | `discretize` | bin numbers into ranked `CategoricalArray` labels; break form `discretize(x, [b1, b2]; ...)` with kwargs `boundedness` (`:unbounded`/`:boundedbelow`/`:boundedabove`/`:bounded`), `leftequal`, `absolute`, `rank`, `ranksep`, `label`, `compact`, `reverse` + number formatting (`prefix`, `suffix`, `scale`, `precision`, `commas`, ...); quantile form `discretize(x, quantiles = [...])` or `discretize(x, ngroups = 4)` | `dim"discretize(TestScr, quantiles=[.25,.5,.75])"`, `dim"discretize(x, [0, 10], boundedness = :boundedbelow)"` |
 | `quantiles` | `quantiles(measure, [q1, q2, ...])` — label each value by the quantile bucket it falls into. Bare use ranks rows individually (window kind); add `\|> groupby(keys...)` to aggregate `measure` per group first and label the groups. Boundaries are the INNER quantiles — 0 and 1 are implied, so `[.25,.5,.75]` yields `1. [0%, 25%)` … `4. [75%, 100%]`. Kwargs: `leftequal` (default `true`; `false` flips to `[0%, 25%]`, `(25%, 50%]`, …), `prefix` / `suffix` decorating the interval (`"1. <prefix> [0%, 25%) <suffix>"`) | `dim"quantiles(TestScr, [.5]) \|> groupby(District)"` |
+| `where` | flag by a Boolean condition — the labels default to **the condition text itself**: `dim"where(sales > 100)"` labels rows `"sales > 100"` / `"Not sales > 100"`. Kwargs `true_label`, `false_label` customize (`false_label` defaults to `"Not " * true_label`, so `true_label = "big"` gives `"big"` / `"Not big"`); missing conditions label `missing`; the true label sorts first. Bare use flags rows (window kind — a scalar condition like `where(sum(sales) > 100)` flags whole partitions); add `\|> groupby(keys...)` to flag groups by their aggregates | `dim"where(sales > 100 && sales < 200)"`, `dim"where(TestScr > 35) \|> groupby(District)"` |
 
 `discretize` used bare is **window**-kind (bins row values); wrap in
 `dimspec(...; by = :District, kind = :pivot)` to bin *group aggregates*
@@ -77,9 +84,23 @@ dim"lag(sales) |> orderby(date => :desc)"      # direction
 dim"cumsum(sales) |> orderby(region, date)"    # multi-key
 ```
 
-The partition is sorted, the operator runs over the sorted vectors, and
-results scatter back to the original rows. Window kind only (pivot dimensions
-classify group aggregates — there is nothing to sort).
+On a **window** dimension the partition's *rows* are sorted, the operator runs
+over the sorted vectors, and results scatter back to the original rows.
+
+On a **pivot** dimension (one with `groupby`, or a classifier verb) `orderby`
+sorts the *groups*: the group-level vectors — keys, or measures aggregated per
+`AggrHints` — are ordered before the verb runs. This is the Pareto idiom:
+
+```julia
+dim"cumsum(sales) |> groupby(region) |> orderby(sales => :desc)"
+# every row: the running total over regions, largest region first.
+# `sales` inside orderby names the group-level aggregate -- the only sales
+# that exists at that stage (see design/compound-modifiers.md)
+```
+
+Modifier textual order is **not** semantic: `groupby(g) |> orderby(m)` and
+`orderby(m) |> groupby(g)` are the same spec. Modifiers are options, like
+keyword arguments; the engine plan is fixed — group, order the groups, verb.
 
 **`groupby(keys...)`** — pivot grouping, the universal "right-group-by":
 
@@ -111,16 +132,21 @@ dim"sales > mean(sales)"                     # above-group-average flag
 
 Available reductions (same functions as the aggregation side): `sum` `prod`
 `mean` `median` `std` `var` `quantile` `minimum` `maximum` `extrema` `length`
-`count` `first` `last` `skipmissing` `uniqvalue` `unionall`.
+`count` `first` `last` `skipmissing` `uniqvalue` `countuniq` `unionall`
+(e.g. `dim"countuniq(District)"` — the distinct-District count on every
+member row of the partition).
 
 ## Elementwise math, arithmetic, comparisons
 
 - `abs` `log` `log2` `log10` `exp` `sqrt` `round` `floor` `ceil` `min` `max` —
   elementwise on columns: `dim"round(sales / sum(sales), digits = 2)"`,
   `dim"max(sales, 0)"`.
-- `+` `-` `*` `/` `^` and `==` `!=` `<` `<=` `>` `>=` `≠` `≤` `≥` — broadcast
-  semantics (dotted spellings `.+` `.<` ... are aliases). Comparison results are
-  Bool columns, handy as pivot keys.
+- `+` `-` `*` `/` `^` and `==` `!=` `<` `<=` `>` `>=` `≠` `≤` `≥` and `!`
+  (elementwise negation: `dim"!(a > b)"`, `dim"!flag"`) — broadcast semantics
+  (dotted spellings `.+` `.<` ... are aliases). Comparison results are Bool
+  columns, handy as pivot keys — a bare condition is a legal spec
+  (`dim"sales > 10 && sales < 20"`), and `where` turns one into readable
+  labels.
 
 ## Extending the whitelist
 

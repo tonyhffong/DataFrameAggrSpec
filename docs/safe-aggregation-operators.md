@@ -20,6 +20,12 @@ column.
 - a bare registered name is shorthand for applying it to the target:
   `aggr"sum"` ≡ `aggr"sum(_)"`
 - no dots needed for arithmetic — operators broadcast (see below)
+- Boolean conditions combine with `&&`, `||`, `!` — pure elementwise (Kleene:
+  `missing` propagates, both sides always evaluated), binding looser than
+  comparisons: `aggr"sum(_) > 100 && length(_) > 5"` is a Bool measure, and
+  `aggr"where(sum(_) > 100)"` labels it — the labels default to the condition
+  text (see the `where` entry in
+  [safe-dimension-operators.md](safe-dimension-operators.md))
 
 ## Reductions
 
@@ -43,6 +49,7 @@ Whole-vector functions that produce the aggregate value.
 | `last` | last value in the group | `aggr"last(_)"` |
 | `skipmissing` | drop missings before reducing | `aggr"sum(skipmissing(_))"` |
 | `uniqvalue` | the single unique non-missing value, else `missing`; kwargs `skipna`, `skipempty` | `aggr"uniqvalue(_)"` |
+| `countuniq` | count-distinct: the number of unique non-missing values; kwargs `skipna` (default `true`; `false` counts `missing` as a value), `skipempty` (drop empty strings) | `aggr"countuniq(_)"` |
 | `unionall` | flattened union of a vector-of-vectors column | `aggr"unionall(_)"` |
 | `strjoinuniq` | unique non-missing values as strings, sorted and joined; `strjoinuniq(_, sep, limit)` with `sep = ","` and `limit = 128` characters (a trailing `…` marks truncation) | `aggr"strjoinuniq(_, \"; \", 64)"` |
 

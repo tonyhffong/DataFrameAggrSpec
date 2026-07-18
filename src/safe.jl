@@ -57,7 +57,7 @@ for f in (
     sum, prod, mean, median, std, var, quantile, minimum, maximum, extrema,
     length, count, first, last, skipmissing,
     # package verbs
-    uniqvalue, unionall, strjoinuniq, topnames, discretize, quantiles, lag, lead,
+    uniqvalue, countuniq, unionall, strjoinuniq, topnames, discretize, quantiles, lag, lead, where,
     # vector transforms
     cumsum, cumprod,
 )
@@ -69,10 +69,11 @@ for f in (abs, log, log2, log10, exp, sqrt, round, floor, ceil, min, max)
 end
 
 # operators: undotted and dotted spellings bind to the same broadcasting closure
+# (! ships here directly -- registerop!'s '!' ban is a rule for HOST names)
 for (name, f) in Any[
     (:+, +), (:-, -), (:*, *), (:/, /), (:^, ^),
     (:(==), ==), (:!=, !=), (:<, <), (:<=, <=), (:>, >), (:>=, >=),
-    (:≠, !=), (:≤, <=), (:≥, >=),
+    (:≠, !=), (:≤, <=), (:≥, >=), (:!, !),
 ]
     b = bcast(f)
     SafeOps[name] = b
@@ -148,9 +149,8 @@ const SafeRejections = Dict{Symbol,String}(
     :block => "blocks are not allowed",
     Symbol("=") => "assignment is not allowed",
     :ref => "indexing is not allowed",
-    :comparison => "chained comparisons are not allowed; split into single comparisons",
-    Symbol("&&") => "boolean && is not allowed",
-    Symbol("||") => "boolean || is not allowed",
+    :comparison => "chained comparisons are not allowed -- combine single " *
+                    "comparisons with && (10 < x < 20 becomes x > 10 && x < 20)",
     Symbol("...") => "splatting is not allowed",
     :tuple => "tuples are not allowed",
     :generator => "comprehensions are not allowed",
@@ -178,6 +178,14 @@ modifier_reminder(m::Symbol) =
 # against the whitelist, or the full registry as a last resort (it is the only
 # discovery mechanism when nothing is close)
 function unknown_op_error(what::String, fname::Symbol)
+    # DataFrames muscle memory: .& / .| are spelled && / || in this grammar
+    if in(fname, (Symbol("&"), Symbol("|"), Symbol(".&"), Symbol(".|")))
+        c = in(fname, (Symbol("&"), Symbol(".&"))) ? "&&" : "||"
+        error(what * ": '" * string(fname) * "' is not an operator here -- " *
+              "combine conditions with '" * c * "' (pure elementwise over " *
+              "columns; binds looser than comparisons, so no parentheses " *
+              "needed: a > 1 " * c * " b < 2)")
+    end
     in(fname, SafeModifiers) && error(what * ": " * modifier_reminder(fname))
     n = nearest(string(fname), vcat(listops(), collect(SafeModifiers)))
     if n isa Symbol && in(n, SafeModifiers)
@@ -210,6 +218,16 @@ function compile_node(ex, cols::Vector{Symbol}, what::String)
     elseif isa(ex, Expr) && ex.head == :vect
         ts = Function[compile_node(a, cols, what) for a in ex.args]
         return vals -> Base.vect((t(vals) for t in ts)...)
+    elseif isa(ex, Expr) && (ex.head == :(&&) || ex.head == :(||))
+        # && / || are control flow in Julia (their own heads, not :call), so
+        # they cannot live in the registry -- translated structurally to PURE
+        # elementwise and/or: both sides always evaluated, missing propagates
+        # (Kleene). The payoff is precedence: they bind looser than
+        # comparisons, so `a > 1 && b < 2` needs no parentheses.
+        op = ex.head == :(&&) ? (&) : (|)
+        lt = compile_node(ex.args[1], cols, what)
+        rt = compile_node(ex.args[2], cols, what)
+        return vals -> Base.broadcast(op, lt(vals), rt(vals))
     elseif isa(ex, Expr) && ex.head == :call
         return compile_call(ex, cols, what)
     elseif isa(ex, Expr) && haskey(SafeRejections, ex.head)
@@ -348,6 +366,44 @@ function peel_modifiers(ex, what::String)
     (ex, order, by)
 end
 
+# where's default labels are the condition's SOURCE TEXT, which only the
+# compiler knows (the verb just sees a Bool vector) -- inject
+# `true_label = "<condition>"` into any where(...) call that does not spell
+# its own (false_label then derives from true_label inside the verb, see
+# verbs.jl). Every where call passes through here, so the arity check lives
+# here too. Trusted-Expr specs get no such injection: their authors pass
+# true_label explicitly.
+function desugar_where!(ex, what::String)
+    isa(ex, Expr) || return ex
+    if ex.head == :call && ex.args[1] == :where
+        pos = positional_args(ex)
+        length(pos) == 1 || error(
+            what * ": where takes exactly one Boolean condition, plus " *
+            "optional labels -- where(cond) or " *
+            "where(cond, true_label = \"...\", false_label = \"...\")",
+        )
+        haslabel = any(ex.args[2:end]) do a
+            Base.Meta.isexpr(a, :kw) && a.args[1] == :true_label ||
+                Base.Meta.isexpr(a, :parameters) && any(
+                    p -> Base.Meta.isexpr(p, :kw) && p.args[1] == :true_label,
+                    a.args,
+                )
+        end
+        haslabel || push!(ex.args, Expr(:kw, :true_label, string(pos[1])))
+    end
+    for a in ex.args
+        desugar_where!(a, what)
+    end
+    ex
+end
+
+# top-level && / || make a legal spec shape too: `a > 1` is already a valid
+# Bool-column spec, so its compound form must be as well. :comparison passes
+# the shape gate only to reach compile_node's tailored rejection ("combine
+# single comparisons with &&") instead of a generic shape error.
+iscondshape(ex) =
+    isa(ex, Expr) && (ex.head == :(&&) || ex.head == :(||) || ex.head == :comparison)
+
 # checkcols: validate a spec's column references against the columns a host
 # knows to exist (typically propertynames(df)), with did-you-mean repair --
 # the TUI path, where a misspelled column would otherwise surface much later
@@ -395,12 +451,14 @@ function parseaggr_impl(src::String)
         haskey(SafeOps, ex) || unknown_op_error("parseaggr", ex)
         ex = Expr(:call, ex, :_)         # lower to sum(_), like trusted :sum
     end
-    isa(ex, Expr) && ex.head == :call ||
+    isa(ex, Expr) && (ex.head == :call || iscondshape(ex)) ||
         error("parseaggr: spec must be a function call or a registered " *
               "function name, got \"" * src * "\"")
+    desugar_where!(ex, "parseaggr")
     cols = Symbol[]
     thunk = compile_node(ex, cols, "parseaggr")
-    SafeAggrSpec(src, ex.args[1], (vs...) -> thunk(vs), cols)
+    fname = iscondshape(ex) ? Symbol(ex.head) : ex.args[1]
+    SafeAggrSpec(src, fname, (vs...) -> thunk(vs), cols)
 end
 
 function parsedim(
@@ -418,7 +476,7 @@ end
 function parsedim_impl(src::String)
     ex = safe_parse(src, "parsedim")
     (ex, order, by) = peel_modifiers(ex, "parsedim")
-    if !(isa(ex, Expr) && ex.head == :call)
+    if !(isa(ex, Expr) && ex.head == :call) && !iscondshape(ex)
         if isa(ex, Symbol) && haskey(SafeOps, ex)
             error("parsedim: '" * src * "' is an operator name -- write it " *
                   "as a call: \"" * src * "(col)\"")
@@ -431,13 +489,16 @@ function parsedim_impl(src::String)
         error("parsedim: spec must be a function call (e.g. \"cumsum(sales)\"), got \"" *
               src * "\"")
     end
+    desugar_where!(ex, "parsedim")
     cols = Symbol[]
     thunk = compile_node(ex, cols, "parsedim")
     in(:_, cols) &&
         error("parsedim: '_' is the aggregation target placeholder and has " *
               "no meaning in a dim spec")
-    posargs = Any[simple_posarg(a) for a in positional_args(ex)]
-    SafeDimSpec(src, ex.args[1], (vs...) -> thunk(vs), cols, posargs, order, by)
+    posargs = iscondshape(ex) ? Any[] :
+              Any[simple_posarg(a) for a in positional_args(ex)]
+    fname = iscondshape(ex) ? Symbol(ex.head) : ex.args[1]
+    SafeDimSpec(src, fname, (vs...) -> thunk(vs), cols, posargs, order, by)
 end
 
 # string-macro sugar; expands to a runtime call so precompilation stays trivial,

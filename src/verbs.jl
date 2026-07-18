@@ -16,6 +16,18 @@ function uniqvalue(x::AbstractVector; skipna::Bool = true, skipempty::Bool = fal
     length(lvls) == 1 ? lvls[1] : missing
 end
 
+# countuniq: the number of distinct values -- the count-distinct sibling of
+# uniqvalue / strjoinuniq, with the same kwargs: skipna drops missings from
+# the count (skipna = false counts missing as a value), skipempty drops empty
+# strings.
+function countuniq(x::AbstractVector; skipna::Bool = true, skipempty::Bool = false)
+    work = skipna ? collect(skipmissing(x)) : collect(x)
+    if skipempty && eltype(work) <: AbstractString
+        filter!(!isempty, work)
+    end
+    length(unique(work))
+end
+
 function cut_categories(
     ::Type{S},
     breaks::Vector{T};
@@ -432,23 +444,33 @@ end
 
 # names are expected to be unique
 # n is the maximum rank number to report. Actual outcome may depend on existence of a tie, and dense option
+# name accepts any vector -- values are stringified (categorical labels from an
+# earlier classifier, integer ids, ...); missing names/measures never rank,
+# consume no rank slot, and land in the `others` bucket
 function topnames(
-    name::AbstractArray{S,1},
-    measure::AbstractArray{T,1},
-    n::Int;
+    name::AbstractVector,
+    measure::AbstractArray{<:Union{T,Missing},1},
+    n::Integer;
     absolute = false,
     ranksep = ". ",
     dense = true, # if there is a tie in the 2nd place, do we do "1,2,2,4", or "1,2,2,3"
     tol = 0,  # if absolute, what is the smallest contribution that we would consider
     others = "Others",
     parens = false, # put parentheses around names with negative measure?
-) where {S<:AbstractString,T<:Real}
+) where {T<:Real}
 
+    name = Union{Missing,String}[ismissing(v) ? missing : string(v) for v in name]
+    keep = .!ismissing.(name)   # a missing name has no printable label -- drop
+                                # it from the ranking pool up front
     if absolute
-        df = DataFrame(name = name, measure = measure, absmeasure = abs.(measure))
-        if tol > 0 # filter out too small names
+        df = DataFrame(
+            name = name[keep],
+            measure = measure[keep],
+            absmeasure = abs.(measure[keep]),
+        )
+        if tol > 0 # filter out too small names (missing measures never pass)
             dfsorted = sort(
-                df[df.absmeasure .>= tol, :],
+                df[coalesce.(df.absmeasure .>= tol, false), :],
                 [:absmeasure, :measure],
                 rev = [true, true],
             )
@@ -456,7 +478,7 @@ function topnames(
             dfsorted = sort(df, [:absmeasure, :measure], rev = [true, true])
         end
     else
-        df = DataFrame(name = name, measure = measure)
+        df = DataFrame(name = name[keep], measure = measure[keep])
         dfsorted = sort(df, [:measure], rev = [true])
     end
 
@@ -675,4 +697,33 @@ function quantiles(
         for v in measure
     ]
     CategoricalArray(labels)
+end
+
+# where: label a Boolean condition -- the true side reads as the condition
+# itself. In the safe grammar the labels default to the spec text
+# (dim"where(sales > 100)" labels rows "sales > 100" / "Not sales > 100" --
+# parseaggr/parsedim inject true_label from the source, see desugar_where! in
+# safe.jl). true_label therefore has NO default here, so trusted-Expr callers
+# spell it out: :( where(:sales > 100, true_label = "big") ) -> "big"/"Not big".
+# Missing conditions label missing. A vector condition returns a
+# CategoricalArray whose levels put the true label first (sorts true-first);
+# a scalar condition (e.g. where(sum(sales) > 100)) returns the bare label,
+# which a window partition broadcasts.
+function where(
+    cond::Union{Bool,Missing,AbstractVector};
+    true_label::AbstractString,
+    false_label::AbstractString = "Not " * true_label,
+)
+    true_label != false_label ||
+        error("where: true_label and false_label must differ")
+    lab(c) =
+        ismissing(c) ? missing :
+        isa(c, Bool) ? (c ? String(true_label) : String(false_label)) :
+        error("where: the condition must be Boolean (e.g. sales > 100), got " *
+              string(c))
+    isa(cond, AbstractVector) || return lab(cond)
+    CategoricalArray(
+        Union{Missing,String}[lab(c) for c in cond];
+        levels = [String(true_label), String(false_label)],
+    )
 end

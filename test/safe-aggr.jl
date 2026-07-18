@@ -40,6 +40,42 @@ end
     @test aggr"std(_) / mean(_)".f(x) == Statistics.std(x) / 2.0      # coeff. of variation
 end
 
+@testset "countuniq" begin
+    # verb semantics: count-distinct, uniqvalue's kwargs
+    @test countuniq([1, 2, 2, 3]) == 3
+    @test countuniq(["a", "b", "a"]) == 2
+    @test countuniq([1, missing, 1]) == 1                  # skipna default
+    @test countuniq([1, missing, 1]; skipna = false) == 2  # missing counts as a value
+    @test countuniq(String[]) == 0
+    @test countuniq(["a", "", "b"]; skipempty = true) == 2
+
+    # through the untrusted DSL, bare-name form included
+    @test aggr"countuniq(_)".f(["a", "b", "a"]) == 2
+    @test aggr"countuniq".f([1, 1, 2]) == 2
+
+    # count distinct districts per county, as a hints spec
+    df = DataFrame(County = ["C1", "C1", "C1", "C2"],
+                   District = ["d1", "d1", "d2", "d3"])
+    out = agg(df, :County; hints = AggrHints(:District => aggr"countuniq"))
+    @test out.District == [2, 1]
+end
+
+@testset "Boolean measures (&&, ||, where)" begin
+    # a Bool-valued measure from compound reductions -- top-level && is legal
+    @test aggr"sum(_) > 100 && length(_) > 2".f([50.0, 60.0, 70.0]) == true
+    @test aggr"sum(_) > 100 && length(_) > 2".f([200.0]) == false
+
+    # where as a group-level flag measure, label = the condition text
+    @test aggr"where(sum(_) > 100)".f([60.0, 70.0]) == "sum(_) > 100"
+    @test aggr"where(sum(_) > 100, true_label = \"big\")".f([1.0]) == "Not big"
+
+    # in a grouped aggregation: group sums x=3, y=7
+    df = DataFrame(g = ["x", "x", "y"], v = [1.0, 2.0, 7.0])
+    out = agg(df, :g; hints = AggrHints(:v => aggr"where(sum(_) > 5)"),
+              cols = [:v => aggr"where(sum(_) > 5)" => :big])
+    @test out.big == ["Not sum(_) > 5", "sum(_) > 5"]
+end
+
 @testset "strjoinuniq" begin
     # verb semantics: unique, non-missing, stringified, sorted, joined, capped
     @test strjoinuniq(["b", "a", "b", missing]) == "a,b"

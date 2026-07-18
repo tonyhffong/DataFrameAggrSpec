@@ -24,6 +24,13 @@ pddf() = DataFrame(
     @test dependencies(d2) == [:EnrlTot]
 
     @test_throws ErrorException PivotDim(:bad, :( discretize(:EnrlTot, [35]) ))
+
+    # group ordering (0.8.4): in-string orderby lands in `order`, its columns
+    # join the dependencies
+    d3 = PivotDim(:p, "cumsum(TestScr) |> groupby(District) |> orderby(TestScr => :desc)")
+    @test d3.by == [:District]
+    @test d3.order == [:TestScr => true]
+    @test dependencies(d3) == [:TestScr]
 end
 
 @testset "PivotDim evaluation" begin
@@ -52,4 +59,21 @@ end
     df5 = dim(df, [PivotDim(:top2m, :( topnames(:District, :TestScr, 2) ))];
               hints = AggrHints(:TestScr => :( sum(:_) / length(:_) )))
     @test df5.top2m == ["Others", "Others", "1. d2", "Others", "2. d4", "Others"]
+end
+
+@testset "classifier composability over categorical columns" begin
+    # categorical source column (what CSV.read(...; pool=true) produces)
+    df = pddf()
+    df.District = categorical(df.District)
+    df2 = dim(df, [:top2 => dim"topnames(District, TestScr, 2)"])
+    @test df2.top2 == ["Others", "Others", "1. d2", "Others", "2. d4", "Others"]
+
+    # classifier over a classifier's output: PivotDim labels are categorical,
+    # and must feed a later topnames as its name column
+    dfa = dim(pddf(), [:ctop => dim"topnames(County, TestScr, 2)"])
+    @test dfa.ctop isa CategoricalArray                # the composability hazard
+    dfb = dim(dfa, [:cc => dim"topnames(ctop, TestScr, 1)"])
+    # ctop group sums: "1. C1" = 110, "2. C2" = 50 -> top1 is "1. C1"
+    @test dfb.cc ==
+          ["1. 1. C1", "1. 1. C1", "1. 1. C1", "1. 1. C1", "Others", "Others"]
 end

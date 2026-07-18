@@ -1,5 +1,6 @@
 # test uniqvalue, unionall, discretize, topnames
 using DataFrameAggrSpec
+using CategoricalArrays
 using Test
 
 @test ismissing( uniqvalue( [ 1,2,3 ] ) )
@@ -185,4 +186,47 @@ result = topnames( name, score, 2, absolute=true, parens=true )
 @test result[ 1 ] == "Others"
 @test result[ 2 ] == "1. Bob" # because it's positive
 @test result[ 3 ] == "2. (Jane)" # because it's by magnitude the largest
+@test result[ 4 ] == "Others"
+
+# name columns need not be plain strings: values are stringified, so
+# categorical columns (e.g. another classifier's output) and integer ids rank
+name=categorical([ "Alice", "Bob", "Jane", "Joe" ])
+score=[ 7, 8, 9, 5 ]
+result = topnames( name, score, 2 )
+@test result[ 1 ] == "Others"
+@test result[ 2 ] == "2. Bob"
+@test result[ 3 ] == "1. Jane"
+@test result[ 4 ] == "Others"
+
+result = topnames( [ 101, 102, 103, 104 ], score, 2 )
+@test result[ 1 ] == "Others"
+@test result[ 2 ] == "2. 102"
+@test result[ 3 ] == "1. 103"
+@test result[ 4 ] == "Others"
+
+# a missing name has no printable label: it never ranks, consumes no rank
+# slot, and lands in the others bucket
+name=[ "Alice", missing, "Jane", "Joe" ]
+score=[ 7, 8, 9, 5 ]
+result = topnames( name, score, 2 )
+@test result[ 1 ] == "2. Alice" # the missing name (score 8) did not take rank 2
+@test result[ 2 ] == "Others"
+@test result[ 3 ] == "1. Jane"
+@test result[ 4 ] == "Others"
+
+# a missing measure is unranked and consumes no rank slot
+name=[ "Alice", "Bob", "Jane", "Joe" ]
+score=Union{Int,Missing}[ 7, missing, 9, 5 ]
+result = topnames( name, score, 2 )
+@test result[ 1 ] == "2. Alice"
+@test result[ 2 ] == "Others"
+@test result[ 3 ] == "1. Jane"
+@test result[ 4 ] == "Others"
+
+# same in absolute mode, where the tol filter must also skip missings
+score=Union{Int,Missing}[ 7, missing, -9, 5 ]
+result = topnames( name, score, 2, absolute=true, tol=1 )
+@test result[ 1 ] == "1. Alice" # by measure, the ranked names order Alice first
+@test result[ 2 ] == "Others"
+@test result[ 3 ] == "2. Jane"
 @test result[ 4 ] == "Others"

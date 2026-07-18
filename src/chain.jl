@@ -62,7 +62,13 @@ function chain_dim(name::Symbol, payload, context::Vector{Symbol})
     if isa(payload, DimSpec)
         kind = payload.kind == :auto ? autokind(payload.spec) : payload.kind
         if kind == :pivot
-            PivotDim(name, payload.spec; by = payload.by, context = context)
+            PivotDim(
+                name,
+                payload.spec;
+                by = payload.by,
+                context = context,
+                order = payload.order,   # group-level ordering (Pareto idiom)
+            )
         else
             WindowDim(
                 name,
