@@ -1,5 +1,11 @@
 # DataFrameAggrSpec.jl
 
+DataFrameAggrSpec specializes in only two things: creating dimensions and creating aggregations (often based on those new
+dimensions) from DataFrames. Its design focuses on composability, both internally within this package
+(You will get a lot of mileage just using it) and with other packages. Furthermore, it has a "safe" parser to handle instructions
+from untrusted input (e.g. TUI/GUI text input), so package developers with user interface in mind can leverage the
+DSL defined here safely.
+
 ## Contents
 
 - [Introduction](#introduction)
