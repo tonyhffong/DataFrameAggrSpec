@@ -1,5 +1,20 @@
 # DataFrameAggrSpec.jl
 
+## Contents
+
+- [Introduction](#introduction)
+- [Dimensioning](#dimensioning)
+  - [Chains: dimensions become pivot keys](#chains-dimensions-become-pivot-keys)
+- [Aggregation](#aggregation)
+  - [Composite aggregation](#composite-aggregation)
+- [Pipelines](#pipelines)
+- [The safe grammar, and extending it](#the-safe-grammar-and-extending-it)
+- [Advanced: trusted Expr specs and the two dimension kinds](#advanced-trusted-expr-specs-and-the-two-dimension-kinds)
+- [Presentation verbs](#presentation-verbs)
+- [Trust boundary](#trust-boundary)
+
+## Introduction
+
 A UI-free **runtime** DSL for DataFrame *aggregation* and *dimensioning*. Other packages using it can
 register new operators for its own use.
 
@@ -39,18 +54,6 @@ At the core of this package there are two operator pillars, one composition rule
   <img src="docs/assets/dim-vs-agg.svg" width="680"
        alt="dim adds a sibling-computed column to every row; agg reduces to one row per key">
 </p>
-
-## Contents
-
-- [Dimensioning](#dimensioning)
-  - [Chains: dimensions become pivot keys](#chains-dimensions-become-pivot-keys)
-- [Aggregation](#aggregation)
-  - [Composite aggregation](#composite-aggregation)
-- [Pipelines](#pipelines)
-- [The safe grammar, and extending it](#the-safe-grammar-and-extending-it)
-- [Advanced: trusted Expr specs and the two dimension kinds](#advanced-trusted-expr-specs-and-the-two-dimension-kinds)
-- [Presentation verbs](#presentation-verbs)
-- [Trust boundary](#trust-boundary)
 
 ## Dimensioning
 
