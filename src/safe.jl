@@ -58,6 +58,7 @@ for f in (
     length, count, first, last, skipmissing,
     # package verbs
     uniqvalue, countuniq, unionall, strjoinuniq, topnames, discretize, quantiles, lag, lead, where,
+    wmeanfallback,
     # vector transforms
     cumsum, cumprod,
 )

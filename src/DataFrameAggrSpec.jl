@@ -63,6 +63,7 @@ export AggrHints, resolveaggr, aggrvalue, agg
 export dimspec, dim, dim!
 # Aggregation / presentation verbs
 export uniqvalue, countuniq, unionall, strjoinuniq, discretize, topnames, quantiles, lag, lead, where
+export wmeanfallback
 # Date-bucketing labels (lexical order = chronological order)
 export yyyy, yyyyq, yyq, yyyymm, yymm
 

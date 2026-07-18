@@ -87,6 +87,37 @@ end
     @test out.big == ["Not sum(_) > 5", "sum(_) > 5"]
 end
 
+@testset "wmeanfallback" begin
+    x  = [1.0, 2.0, 3.0]
+    z  = [0.0, 0.0, 0.0]      # sums to zero -- unusable
+    m  = [10.0, missing, 30.0]  # sum is missing -- unusable, but must not crash
+    sz = [10.0, 20.0, 30.0]
+
+    # verb semantics: direct calls
+    @test wmeanfallback(x, [sz]) ≈ sum(x .* sz) / sum(sz)
+    @test wmeanfallback(x, [z, sz]) ≈ sum(x .* sz) / sum(sz)   # first fails, second wins
+    @test wmeanfallback(x, [m, sz]) ≈ sum(x .* sz) / sum(sz)   # missing weight-sum skipped too
+    @test wmeanfallback(x, [z, 1]) ≈ sum(x) / length(x)        # literal weight = unweighted mean
+    @test ismissing(wmeanfallback(x, [z]))                     # every candidate fails
+    @test_throws ErrorException wmeanfallback(x, Float64[])    # no candidates at all
+
+    # through the untrusted DSL, first-encounter arg order: _, z, sz
+    @test aggr"wmeanfallback(_, [z, sz])".f(x, z, sz) ≈ sum(x .* sz) / sum(sz)
+    @test ismissing(aggr"wmeanfallback(_, [z])".f(x, z))
+
+    # as a grouped hints spec
+    df = DataFrame(
+        g = ["a", "a", "b", "b"],
+        v = [1.0, 2.0, 10.0, 20.0],
+        Size = [0.0, 0.0, 1.0, 3.0],
+        Suitability = [2.0, 4.0, 5.0, 5.0],
+    )
+    spec = aggr"wmeanfallback(_, [Size, Suitability, 1])"
+    out = agg(df, :g; hints = AggrHints(:v => spec))
+    @test out.v[1] ≈ (2 * 1.0 + 4 * 2.0) / (2 + 4)     # group a: Size sums to 0, falls to Suitability
+    @test out.v[2] ≈ (1 * 10.0 + 3 * 20.0) / (1 + 3)   # group b: Size usable
+end
+
 @testset "strjoinuniq" begin
     # verb semantics: unique, non-missing, stringified, sorted, joined, capped
     @test strjoinuniq(["b", "a", "b", missing]) == "a,b"

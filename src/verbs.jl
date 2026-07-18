@@ -769,3 +769,22 @@ function where(
         levels = [String(true_label), String(false_label)],
     )
 end
+
+# wmeanfallback: weighted mean with a CASCADE of candidate weights -- the
+# first candidate whose weight-sum is usable (not zero, not missing) wins;
+# a bare Number in the list (typically `1`) is a constant weight, which
+# cancels out of the ratio, i.e. an unweighted-mean fallback. A weight-sum of
+# `missing` is treated the same as zero (skip to the next candidate) rather
+# than propagating, since `missing == 0` is itself `missing` and would
+# otherwise crash the branch below on a non-Boolean condition. Exhausting the
+# list without a usable weight returns `missing`.
+function wmeanfallback(x::AbstractVector, weights::AbstractVector)
+    isempty(weights) && error("wmeanfallback: needs at least one weight candidate")
+    n = length(x)
+    for w in weights
+        wsum = w isa Number ? w * n : sum(w)
+        (!ismissing(wsum) && wsum != 0) || continue
+        return sum(x .* w) / wsum
+    end
+    missing
+end
