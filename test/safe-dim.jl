@@ -377,3 +377,22 @@ end
     @test_throws ErrorException dim(df, [:bad =>
         dimspec(dim"discretize(EnrlTot, [35]) |> groupby(District)"; kind = :window)])
 end
+
+@testset "nested grouped reduction (dim side)" begin
+    # a |> groupby NESTED inside a dim spec is COMPUTATIONAL grouping -- a
+    # grouped-reduction vector feeding the outer expression -- not the
+    # top-level pivot modifier: the spec stays window kind and its scalar
+    # result broadcasts to the partition
+    df = DataFrame(
+        county = ["c1", "c1", "c1", "c2", "c2"],
+        year   = [2020, 2020, 2021, 2020, 2021],
+        pop    = [10.0, 20.0, 40.0, 5.0, 15.0],
+    )
+    keycols, dims = DataFrameAggrSpec.normalize_chain(
+        [:county, :avgyr => dim"mean(sum(pop) |> groupby(year))"])
+    @test dims[1] isa WindowDim                    # nested groupby ≠ pivot kind
+    @test :year in dependencies(dims[1])           # nested key is a dependency
+    out = dim(df, [:county, :avgyr => dim"mean(sum(pop) |> groupby(year))"])
+    # c1: yearly sums 30, 40 -> 35;  c2: 5, 15 -> 10
+    @test out.avgyr == [35.0, 35.0, 35.0, 10.0, 10.0]
+end

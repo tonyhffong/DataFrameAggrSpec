@@ -1,5 +1,6 @@
 using DataFrameAggrSpec
 using DataFrames
+using Dates
 using Statistics
 using Test
 
@@ -85,6 +86,71 @@ end
     out = agg(df, :g; hints = AggrHints(:v => aggr"where(sum(_) > 5)"),
               cols = [:v => aggr"where(sum(_) > 5)" => :big])
     @test out.big == ["Not sum(_) > 5", "sum(_) > 5"]
+end
+
+@testset "composite aggregation (nested groupby)" begin
+    # panel: district populations, snapshots over years; yearly sums 30, 30, 30
+    pop  = [10.0, 20.0, 5.0, 25.0, 8.0, 22.0]
+    year = [2020, 2020, 2021, 2021, 2022, 2022]
+    @test aggr"mean(sum(_) |> groupby(year))".f(pop, year) == 30.0
+    @test aggr"mean(sum(_) ∘ groupby(year))".f(pop, year) == 30.0  # glyph twin
+    @test aggr"length(sum(_) |> groupby(year))".f(pop, year) == 3  # n subgroups
+
+    # subgroups are sorted by key: first/last = earliest/latest year,
+    # regardless of row order
+    v  = [30.0, 2.0, 1.0]
+    yr = [2022, 2020, 2021]
+    @test aggr"first(sum(_) |> groupby(year))".f(v, yr) == 2.0     # 2020
+    @test aggr"last(sum(_) |> groupby(year))".f(v, yr) == 30.0     # 2022
+    @test aggr"maximum(sum(_) |> groupby(year))".f(v, yr) == 30.0
+
+    # the inner spec is a full spec: weighted mean per year, then spread
+    w = [1.0, 3.0, 1.0, 1.0, 2.0, 2.0]
+    wm(x, ww) = sum(x .* ww) / sum(ww)
+    expected = [wm(pop[1:2], w[1:2]), wm(pop[3:4], w[3:4]), wm(pop[5:6], w[5:6])]
+    @test aggr"maximum(sum(_ * w) / sum(w) |> groupby(year))".f(pop, w, year) ≈
+          maximum(expected)
+
+    # multi-key: state x year, both spellings
+    st = ["a", "a", "a", "b", "b", "b"]
+    y2 = [2020, 2020, 2021, 2020, 2021, 2021]
+    @test aggr"length(sum(_) |> groupby(state, year))".f(pop, st, y2) == 4
+    @test aggr"length(sum(_) |> groupby([state, year]))".f(pop, st, y2) == 4
+
+    # computed key: bucket a raw date column by calendar year on the fly
+    t = [Date(2020, 1, 1), Date(2020, 6, 1), Date(2021, 3, 1)]
+    x = [1.0, 2.0, 4.0]
+    @test aggr"mean(sum(_) |> groupby(yyyy(t)))".f(x, t) == (3.0 + 4.0) / 2
+
+    # missing key forms its own subgroup (sorted last)
+    ym = [2020, 2020, missing]
+    @test aggr"length(sum(_) |> groupby(year))".f(x, ym) == 2
+    @test aggr"last(sum(_) |> groupby(year))".f(x, ym) == 4.0      # the missing group
+
+    # stages nest: mean county total per year, then max across years
+    cty = ["c1", "c1", "c2", "c1", "c2", "c2"]
+    y3  = [2020, 2020, 2020, 2021, 2021, 2021]
+    p3  = [1.0, 2.0, 9.0, 4.0, 3.0, 3.0]
+    # 2020: county totals 3, 9 -> mean 6;  2021: totals 4, 6 -> mean 5
+    @test aggr"maximum(mean(sum(_) |> groupby(county)) |> groupby(year))".f(
+        p3, cty, y3) == 6.0
+
+    # end-to-end through agg: average yearly total per county
+    df = DataFrame(
+        county = ["c1", "c1", "c1", "c2", "c2"],
+        year   = [2020, 2020, 2021, 2020, 2021],
+        pop    = [10.0, 20.0, 40.0, 5.0, 15.0],
+    )
+    out = agg(df, :county;
+              hints = AggrHints(:pop => aggr"mean(sum(_) |> groupby(year))"),
+              cols = [:pop])
+    @test out.pop == [35.0, 10.0]   # c1: (30 + 40)/2;  c2: (5 + 15)/2
+
+    # column bookkeeping: nested keys are real column references
+    s = aggr"mean(sum(_) |> groupby(year))"
+    @test s.cols == [:_, :year]                       # source order
+    @test checkcols(s, [:pop, :year]) === s
+    @test_throws ErrorException checkcols(s, [:pop])  # year missing
 end
 
 @testset "wmeanfallback" begin

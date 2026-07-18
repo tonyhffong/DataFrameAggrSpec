@@ -238,7 +238,24 @@ mutually exclusive — both are selection modes). It is the quickest way to
 shed a helper column, e.g. `agg(df, chain; hints, allbut = [:gap])` after a
 sessionization chain built from `gap`.
 
-The available reductions are listed in
+### Composite aggregation
+
+Panel data often needs **two-stage** reductions: with population snapshots by
+district over several years, "the average population" should sum the districts
+*within* each year first, then average the yearly totals — a single `mean` or
+`sum` over all rows computes something else entirely. A nested
+`|> groupby(keys...)` expresses the first stage inside the spec:
+
+```julia
+aggr"mean(sum(_) |> groupby(year))"      # sum within each year, then average
+aggr"last(sum(_) |> groupby(year))"      # the latest year's total
+```
+
+The nested part evaluates the inner spec once per key combination and hands
+the key-sorted results to the outer reduction. Keys may be computed
+(`groupby(yyyy(t))`), and stages nest. 
+
+The available reductions, including full rules on "Composite aggregation"  are listed in
 [docs/safe-aggregation-operators.md](docs/safe-aggregation-operators.md).
 
 ## Pipelines

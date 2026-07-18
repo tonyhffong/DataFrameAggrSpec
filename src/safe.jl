@@ -15,6 +15,10 @@
 #   * arithmetic/comparison operators are whitelisted with BROADCAST semantics
 #     (vector op scalar and vector op vector both work; no dots needed, dotted
 #     forms are aliases)
+#   * a NESTED `inner |> groupby(keys...)` is a grouped reduction: `inner`
+#     evaluated per distinct key combination, results collected into a vector
+#     sorted by key -- the composite-aggregation node,
+#     aggr"mean(sum(_) |> groupby(year))" (see compile_grouped)
 # Everything else -- qualified names, macros, interpolation, lambdas, indexing,
 # blocks, comprehensions, splats, ternaries -- is rejected with a clear error.
 # Note one wrinkle of "bare identifier = column": `missing`, `pi`, `Inf` are
@@ -243,6 +247,10 @@ function compile_node(ex, cols::Vector{Symbol}, what::String)
         lt = compile_node(ex.args[1], cols, what)
         rt = compile_node(ex.args[2], cols, what)
         return vals -> Base.broadcast(op, lt(vals), rt(vals))
+    elseif isa(ex, Expr) && ismodifiershape(ex)
+        # `a |> b` / `a ∘ b` reaching the compiler is NESTED (top-level
+        # modifiers are peeled by peel_modifiers / gated by parseaggr first)
+        return compile_grouped(ex, cols, what)
     elseif isa(ex, Expr) && ex.head == :call
         return compile_call(ex, cols, what)
     elseif isa(ex, Expr) && haskey(SafeRejections, ex.head)
@@ -293,6 +301,83 @@ function compile_call(ex::Expr, cols::Vector{Symbol}, what::String)
             (t(vals) for t in pts)...;
             Pair{Symbol,Any}[k => t(vals) for (k, t) in kts]...,
         )
+    end
+end
+
+# nested grouped reduction: `inner |> groupby(keys...)` (∘ works too) INSIDE a
+# spec -- evaluate `inner` once per distinct key combination of the current
+# rows and collect the results into a vector, one element per subgroup,
+# SORTED BY KEY (first/last read as earliest/latest key). Composite
+# aggregation: aggr"mean(sum(_) |> groupby(year))" sums within each year,
+# then means across the years; stages nest recursively. This is COMPUTATIONAL
+# grouping, distinct from the top-level dim-spec modifier (engine metadata,
+# peeled by peel_modifiers before the compiler ever runs). Keys may be
+# computed columns (groupby(yyyy(t))); a missing key forms its own subgroup
+# (Dict isequal semantics). orderby cannot attach here -- subgroup order is
+# the key sort.
+function compile_grouped(ex::Expr, cols::Vector{Symbol}, what::String)
+    combinator, lhs, rhs = ex.args[1], ex.args[2], ex.args[3]
+    if ismodifiershape(lhs)
+        error(what * ": one modifier only in a nested grouped reduction -- " *
+              "multi-key grouping is groupby(k1, k2, ...)")
+    end
+    if ismodifiercall(lhs)
+        error(what * ": the modifier must follow the spec -- write " *
+              "\"mean(sum(_) " * string(combinator) * " groupby(year))\"")
+    end
+    if !ismodifiercall(rhs)
+        if isa(rhs, Symbol) && in(rhs, SafeModifiers)   # forgot the parens
+            error(what * ": " * string(rhs) * " takes columns -- write " *
+                  "\"spec " * string(combinator) * " " * string(rhs) *
+                  "(col, ...)\"")
+        end
+        hint = Base.Meta.isexpr(rhs, :call) && isa(rhs.args[1], Symbol) ?
+               didyoumean(rhs.args[1], SafeModifiers) :
+               isa(rhs, Symbol) ? didyoumean(rhs, SafeModifiers) : ""
+        error(what * ": '" * string(combinator) * "' attaches a groupby " *
+              "modifier to a nested spec (\"mean(sum(_) " *
+              string(combinator) * " groupby(year))\"), got " *
+              string(rhs) * hint)
+    end
+    if rhs.args[1] == :orderby
+        error(what * ": orderby cannot attach to a nested grouped " *
+              "reduction -- subgroups are ordered by their groupby keys")
+    end
+    it = compile_node(lhs, cols, what)   # inner first: cols in source order
+    keyargs = Any[]
+    for a in rhs.args[2:end]
+        if Base.Meta.isexpr(a, :kw) || Base.Meta.isexpr(a, :parameters)
+            error(what * ": groupby takes key columns, not keyword arguments")
+        elseif Base.Meta.isexpr(a, :vect)
+            append!(keyargs, a.args)     # groupby([a, b]) = groupby(a, b)
+        else
+            push!(keyargs, a)
+        end
+    end
+    isempty(keyargs) && error(what * ": groupby needs at least one key column")
+    for a in keyargs
+        isa(a, Union{Number,AbstractString,Char,QuoteNode}) && error(
+            what * ": groupby keys must be columns (or elementwise " *
+            "transforms of columns, e.g. yyyy(t)), got literal " * string(a))
+    end
+    kts = Function[compile_node(a, cols, what) for a in keyargs]
+    nk = length(kts)
+    return function (vals)
+        kvs = [kt(vals) for kt in kts]
+        for kv in kvs
+            isa(kv, AbstractVector) || error(
+                what * ": a groupby key must evaluate to a column, " *
+                "got a scalar")
+        end
+        n = length(kvs[1])
+        all(length(kv) == n for kv in kvs) ||
+            error(what * ": groupby key columns differ in length")
+        groups = Dict{Any,Vector{Int}}()
+        for i = 1:n
+            push!(get!(Vector{Int}, groups, ntuple(j -> kvs[j][i], nk)), i)
+        end
+        ks = sort!(collect(keys(groups)))
+        [it(map(v -> view(v, groups[k]), vals)) for k in ks]
     end
 end
 
@@ -457,10 +542,12 @@ end
 function parseaggr_impl(src::String)
     ex = safe_parse(src, "parseaggr")
     if ismodifiershape(ex) && (ismodifiercall(ex.args[2]) || ismodifiercall(ex.args[3]))
-        error("parseaggr: modifiers (orderby, groupby) are dimension-spec " *
-              "features; an aggregation spec just reduces a column, e.g. " *
-              "\"sum(_ * wt) / sum(wt)\" -- ordering and grouping happen " *
-              "in the dim/agg call around it")
+        error("parseaggr: a top-level modifier is a dimension-spec feature; " *
+              "an aggregation spec must reduce to ONE value, and a grouped " *
+              "reduction yields one value per key -- NEST it in a reduction " *
+              "instead: \"mean(sum(_) |> groupby(year))\". (orderby has no " *
+              "aggregation form; ordering happens in the dim/agg call " *
+              "around the spec)")
     end
     if isa(ex, Symbol)                   # aggr"sum" -- bare registered name
         haskey(SafeOps, ex) || unknown_op_error("parseaggr", ex)

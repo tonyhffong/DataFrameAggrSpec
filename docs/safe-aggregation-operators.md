@@ -83,6 +83,39 @@ aggr"std(_) / mean(_)"             # coefficient of variation
 | `+` `-` `*` `/` `^` | arithmetic, elementwise when an argument is a column (dotted spellings `.+` `.-` `.*` `./` `.^` are aliases) |
 | `==` `!=` `<` `<=` `>` `>=` `≠` `≤` `≥` | comparisons, elementwise; combine with `count` (dotted spellings are aliases) |
 
+## Composite aggregation (nested `groupby`)
+
+A spec argument of the form `inner |> groupby(keys...)` (`∘` works too) is a
+**grouped reduction**: evaluate `inner` once per distinct key combination of
+the group's rows and collect the results into a vector — one element per
+subgroup, **sorted by key**. Nesting it inside an ordinary reduction gives
+two-stage aggregation:
+
+```julia
+aggr"mean(sum(_) |> groupby(year))"      # panel data: sum the population
+                                         # within each year, then average
+                                         # the totals across the years
+aggr"maximum(sum(_) |> groupby(year))"   # the best single year
+aggr"std(sum(_) |> groupby(year))"       # volatility of the yearly totals
+aggr"last(sum(_) |> groupby(year))"      # the LATEST year's total
+                                         # (sorted keys: first/last read as
+                                         # earliest/latest)
+```
+
+- keys may be **computed** columns: `aggr"mean(sum(_) |> groupby(yyyy(t)))"`
+  buckets a raw date column by calendar year on the fly
+- multiple keys: `groupby(state, year)` (or `groupby([state, year])`)
+- the inner spec is a full spec — `aggr"maximum(sum(_ * w) / sum(w) |>
+  groupby(year))"` is the best yearly *weighted mean*
+- a `missing` key forms its own subgroup (sorted last)
+- stages nest:
+  `aggr"maximum(mean(sum(_) |> groupby(county)) |> groupby(year))"` — mean
+  county total per year, then the best year
+- the grouped reduction is a VECTOR, not an aggregate — top-level
+  `aggr"sum(_) |> groupby(year)"` is an error (one value per year is not one
+  value); wrap it in a reduction. `orderby` cannot attach to a nested
+  grouped reduction: subgroup order is the key sort.
+
 ## Elementwise math (usable inside reductions)
 
 `abs` `log` `log2` `log10` `exp` `sqrt` `round` `floor` `ceil` `min` `max` —

@@ -92,15 +92,32 @@ end
                     "at least one column")
     @test modreject(parsedim, "cumsum(sales) |> foo(x)",
                     "expected a modifier call")
-    @test modreject(parsedim, "sum(a |> b)", "unknown function")   # nested, not peeled
+    @test modreject(parsedim, "sum(a |> b)", "attaches a groupby")  # nested, non-modifier rhs
     @test modreject(parseaggr, "sum(_) |> orderby(date)",
-                    "dimension-spec features")
+                    "dimension-spec feature")
     @test modreject(parsedim, "mean(x) |> groupby(a) |> groupby(b)",
                     "duplicate groupby")
     @test modreject(parsedim, "mean(x) |> groupby()", "at least one column")
     @test modreject(parsedim, "mean(x) |> groupby([])", "at least one column")
     @test modreject(parsedim, "mean(x) |> groupby(3)", "column names")
-    @test modreject(parseaggr, "sum(_) |> groupby(g)", "dimension-spec features")
+    # top-level grouped reduction in an aggr spec: one value per key is not an
+    # aggregate -- the error teaches the nested composite form
+    @test modreject(parseaggr, "sum(_) |> groupby(g)", "NEST it in a reduction")
+
+    # NESTED grouped reductions (composite aggregation) have their own errors
+    @test modreject(parseaggr, "mean(sum(_) |> orderby(year))",
+                    "ordered by their groupby keys")
+    @test modreject(parseaggr, "mean(sum(_) |> groupby())", "at least one key")
+    @test modreject(parseaggr, "mean(sum(_) |> groupby(3))", "got literal")
+    @test modreject(parseaggr, "mean(sum(_) |> groupby(k = v))",
+                    "not keyword arguments")
+    @test modreject(parseaggr, "mean(sum(_) |> groupby(a) |> groupby(b))",
+                    "multi-key grouping is groupby(k1, k2, ...)")
+    @test modreject(parseaggr, "mean(groupby(year) |> sum(_))",
+                    "must follow the spec")
+    @test modreject(parseaggr, "mean(sum(_) |> groupby)", "takes columns")
+    @test modreject(parseaggr, "mean(sum(_) |> gropby(year))",
+                    "did you mean 'groupby'?")
     @test_throws ErrorException registerop!(:orderby, identity)   # reserved names
     @test_throws ErrorException registerop!(:groupby, identity)
 end

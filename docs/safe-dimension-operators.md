@@ -136,6 +136,20 @@ Presence of `groupby` is what makes a spec pivot-kind. Verbs whose grouping
 column is data in the spec (`topnames`' 1st argument) imply their grouping and
 reject an additional `groupby`.
 
+A `|> groupby(...)` **nested inside** a spec argument is a different thing:
+a *computational* grouped reduction — evaluate the inner spec once per key
+combination and collect the results into a key-sorted vector (see "Composite
+aggregation" in
+[safe-aggregation-operators.md](safe-aggregation-operators.md)). Top-level =
+engine metadata (aggregate per `AggrHints`, classify the groups, broadcast
+labels); nested = inline math over explicitly-spelled subgroup reductions,
+and the spec stays window kind:
+
+```julia
+dim"mean(sum(pop) |> groupby(year))"   # the average yearly total, on every
+                                       # member row of the partition
+```
+
 ## Group-relative measures (window kind)
 
 Reductions return a scalar per partition; arithmetic broadcasts it back across
