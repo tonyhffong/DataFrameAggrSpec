@@ -2,7 +2,7 @@
 
 DataFrameAggrSpec specializes in only two things: creating dimensions and creating aggregations (often based on those new
 dimensions) from DataFrames. Its design focuses on composability, both internally within this package
-(You will get a lot of mileage just using it) and with other packages. Furthermore, it has a "safe" parser to handle instructions
+(you will get a lot of mileage just using it) and with other packages. Furthermore, it has a "safe" parser to handle instructions
 from untrusted input (e.g. TUI/GUI text input), so package developers with user interface in mind can leverage the
 DSL defined here safely.
 
@@ -22,7 +22,7 @@ DSL defined here safely.
 ## Introduction
 
 A UI-free **runtime** DSL for DataFrame *aggregation* and *dimensioning*. Other packages using it can
-register new operators for its own use.
+register new operators for their own use.
 
 Specifications — supplied as `Symbol`s, `String`s, `Expr`s, spec objects, or
 lambdas at runtime — are compiled into functions over a `DataFrame`. Unlike
@@ -31,14 +31,14 @@ run at compile time, these specs can arrive from a GUI, a config file, or a
 database and be turned into working transforms on the fly. The motivation 
 is coming from data analytics.
 When developing an intuition about a dataset, a user constantly needs to adjust and apply
-different aggregation and pivoting (via static or on-the-fly dimensions) operations. For examples, one may
+different aggregation and pivoting (via static or on-the-fly dimensions) operations. For example, one may
 ask:
-- What are the "top" categories given a measures? e.g. top scoring schools in a state.
+- What are the "top" categories given a measure? e.g. top scoring schools in a state.
 - Which stores have the highest profit margin, this year, this quarter? If I break down by region what is
 the answer? If I break down by municipality what is the answer?
 - What if I change the definition of "profit margin"?
 
-We want to easily change our queries without rewiring many lines of codes, 
+We want to easily change our queries without rewiring many lines of code, 
 scattered across some distances when written in typical query languages.
 
 The core design philosophy is thus "changing one small step in an analysis should only change 
@@ -71,7 +71,7 @@ columns appear. Group totals, shares of a group, running sums, "top 5" labels,
 quantile buckets — these are all dimensions.
 
 **Motivation**: dimensions are natural pivot keys to look at a dataset. An easy way to define new
-dimensions lets users see the same dataset with new lens quickly. Furthermore, dimensions also
+dimensions lets users see the same dataset with a new lens quickly. Furthermore, dimensions also
 allow users to get answers *locally* from a specific segmentation (a bunch of rows sharing the same
 attributes).
 
@@ -156,7 +156,7 @@ the chain** (its *left context*), and once declared, the dimension is
 immediately usable as a key by everything to its right:
 
 ```julia
-chain = [:County, #existing column, Country
+chain = [:County, # existing column, County
          :top5d  => dim"topnames(District, TestScr, 5)",   # per County, rank Districts
          :District,
          :scoreq => dim"discretize(TestScr, quantiles = [.25, .5, .75])"]
@@ -276,7 +276,8 @@ The nested part evaluates the inner spec once per key combination and hands
 the key-sorted results to the outer reduction. Keys may be computed
 (`groupby(yyyy(t))`), and stages nest. 
 
-The available reductions, including full rules on "Composite aggregation"  are listed in
+The available reductions — and the full rules for composite aggregation — are
+listed in
 [docs/safe-aggregation-operators.md](docs/safe-aggregation-operators.md).
 
 ## Pipelines
@@ -324,7 +325,10 @@ macros are compile-time sugar for the same thing).
   (pivot grouping: aggregate the measure at this granularity first) — peeled
   structurally as metadata, never called (dim specs only; the names are
   reserved). `groupby` is what makes any verb — including host-registered
-  ones — pivot-kind, with zero per-verb registration.
+  ones — pivot-kind, with zero per-verb registration. A *nested*
+  `inner |> groupby(keys...)` — legal in both spec kinds — is a different
+  thing: the composite grouped-reduction node (see
+  [Composite aggregation](#composite-aggregation)).
 - everything else is rejected with a clear error: qualified names (`Core.eval`),
   macros, interpolation, lambdas, indexing, blocks, comprehensions, splats.
 - one wrinkle of "bare identifier = column": `missing`, `pi`, `Inf` are

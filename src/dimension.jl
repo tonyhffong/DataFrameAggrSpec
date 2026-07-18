@@ -414,8 +414,8 @@ copyframe(df::DataFrame) = copy(df; copycols = false)
 copyframe(df::AbstractDataFrame) = DataFrame(df)   # SubDataFrame etc.
 
 # dim! / dim: CHAINS are the only public entry -- Symbol keys, `name => spec`
-# declarations (a bare Pair is a one-entry chain), sibling tuples, and
-# dimspec(...) options; see chain.jl. Dimensions apply in order, so a later
+# declarations (a bare Pair is a one-entry chain), and dimspec(...) options;
+# see chain.jl. Dimensions apply in order, so a later
 # one may reference an earlier one's output column. `dim` copies
 # (SubDataFrame-friendly) so the input frame is never touched.
 function dim!(

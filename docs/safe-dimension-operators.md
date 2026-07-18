@@ -165,7 +165,7 @@ dim"sales > mean(sales)"                     # above-group-average flag
 
 Available reductions (same functions as the aggregation side): `sum` `prod`
 `mean` `median` `std` `var` `quantile` `minimum` `maximum` `extrema` `length`
-`count` `first` `last` `skipmissing` `uniqvalue` `countuniq` `unionall`
+`nrow` `count` `first` `last` `skipmissing` `uniqvalue` `countuniq` `unionall`
 `wmeanfallback`
 (e.g. `dim"countuniq(District)"` — the distinct-District count on every
 member row of the partition).

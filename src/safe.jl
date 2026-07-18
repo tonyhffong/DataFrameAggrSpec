@@ -376,7 +376,12 @@ function compile_grouped(ex::Expr, cols::Vector{Symbol}, what::String)
         for i = 1:n
             push!(get!(Vector{Int}, groups, ntuple(j -> kvs[j][i], nk)), i)
         end
-        ks = sort!(collect(keys(groups)))
+        ks = try
+            sort!(collect(keys(groups)))
+        catch
+            error(what * ": groupby keys must be mutually comparable to " *
+                  "sort the subgroups -- got mixed key types")
+        end
         [it(map(v -> view(v, groups[k]), vals)) for k in ks]
     end
 end

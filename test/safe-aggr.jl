@@ -151,6 +151,15 @@ end
     @test s.cols == [:_, :year]                       # source order
     @test checkcols(s, [:pop, :year]) === s
     @test_throws ErrorException checkcols(s, [:pop])  # year missing
+
+    # mixed key types cannot sort: a curated error, not a raw MethodError
+    err = try
+        aggr"mean(sum(_) |> groupby(k))".f([1.0, 2.0, 3.0], Any[1, "a", 2])
+        nothing
+    catch e
+        e
+    end
+    @test err isa ErrorException && occursin("mutually comparable", err.msg)
 end
 
 @testset "wmeanfallback" begin
