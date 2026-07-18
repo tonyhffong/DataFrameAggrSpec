@@ -1,17 +1,22 @@
 # DataFrameAggrSpec.jl
 
-A UI-free **runtime** DSL for DataFrame *aggregation* and *dimensioning*.
+A UI-free **runtime** DSL for DataFrame *aggregation* and *dimensioning*. Other packages using it can
+register new operators for its own use.
+
 Specifications — supplied as `Symbol`s, `String`s, `Expr`s, spec objects, or
 lambdas at runtime — are compiled into functions over a `DataFrame`. Unlike
 [DataFramesMeta.jl](https://github.com/JuliaData/DataFramesMeta.jl), whose macros
 run at compile time, these specs can arrive from a GUI, a config file, or a
-database and be turned into working transforms on the fly. The motivation  
+database and be turned into working transforms on the fly. The motivation 
 is coming from data analytics.
 When developing an intuition about a dataset, a user constantly needs to adjust and apply
-different aggregation and pivoting (via static or on-the-fly dimensions) operations. For examples,
+different aggregation and pivoting (via static or on-the-fly dimensions) operations. For examples, one may
+ask:
 - What are the "top" categories given a measures? e.g. top scoring schools in a state.
-- Within a smaller context, what are the "top" categories then? e.g. top scoring schools within each country
-- What if I change the definition of "scores"?
+- Which stores have the highest profit margin, this year, this quarter? If I break down by region what is
+the answer? If I break down by municipality what is the answer?
+- What if I change the definition of "profit margin"?
+
 We want to easily change our queries without rewiring many lines of codes, 
 scattered across some distances when written in typical query languages.
 
@@ -44,7 +49,12 @@ same grouping-key values. Your existing data is never modified, only new
 columns appear. Group totals, shares of a group, running sums, "top 5" labels,
 quantile buckets — these are all dimensions.
 
-Specs are written as strings in a small spreadsheet-flavored grammar
+**Motivation**: dimensions are natural pivot keys to look at a dataset. An easy way to define new
+dimensions lets users see the same dataset with new lens quickly. Furthermore, dimensions also
+allow users to get answers *locally* from a specific segmentation (a bunch of rows sharing the same
+attributes).
+
+Dimension specifications are written as strings in a small spreadsheet-flavored grammar
 (`dim"..."`): bare identifiers are columns, and only whitelisted operations are
 allowed, so these strings are safe to accept from an end user's text field.
 
@@ -173,10 +183,21 @@ More chain forms:
 
 ## Aggregation
 
-Aggregation **reduces a group of rows to one value per column**. Specs use the
-same safe grammar (`aggr"..."`), with one addition: **`_` stands for the target
-column** — the column being aggregated — so one spec can be reused across many
-columns:
+Aggregation **reduces a group of rows to one value per column**. The main entry
+point is `agg`, which groups by a chain (keys existing or derived) and reduces
+the remaining columns:
+
+```julia
+hints = AggrHints(:TestScr => aggr"sum(_ * EnrlTot) / sum(EnrlTot)",
+                  AbstractString => aggr"uniqvalue")
+
+agg(df, [:County]; hints)            # one row per County, all other cols reduced
+agg(df, chain; hints)                # group by chain keys (existing OR computed)
+```
+
+The reductions themselves use the same safe grammar (`aggr"..."`), with one
+addition: **`_` stands for the target column** — the column being aggregated —
+so one spec can be reused across many columns:
 
 ```julia
 aggr"sum"                        # bare registered name ≡ sum(_)
@@ -187,21 +208,11 @@ aggr"strjoinuniq(_)"             # unique values joined into a display string
 
 `AggrHints` says how to aggregate each column, resolved by column name first,
 then element type (by subtyping), then a default (`Real → sum`, otherwise the
-single unique value):
-
-```julia
-hints = AggrHints(:TestScr => aggr"sum(_ * EnrlTot) / sum(EnrlTot)",
-                  AbstractString => aggr"uniqvalue")
-
-agg(df, [:County]; hints)            # one row per County, all other cols reduced
-agg(df, chain; hints)                # group by chain keys (existing OR computed)
-```
-
-`agg` takes a **chain** also, exactly like `dim`: bare-symbol entries are existing key
-columns and `name => spec` entries are on-the-fly dimensions materialized before
-grouping — so `agg(df, [:County])` is a plain group-by and
-`agg(df, [:region, :bucket => dim"quantiles(sales, [.5])"])` groups by a derived
-bucket, with no separate "pivot" verb to remember.
+single unique value). `agg` takes a **chain** also, exactly like `dim`:
+bare-symbol entries are existing key columns and `name => spec` entries are
+on-the-fly dimensions materialized before grouping — so `agg(df, [:County])` is
+a plain group-by and `agg(df, [:region, :bucket => dim"quantiles(sales, [.5])"])`
+groups by a derived bucket, with no separate "pivot" verb to remember.
 
 `cols =` selects **and names** the reductions (default: every non-key column
 via hints). Each entry is one output column, and the same source column may
