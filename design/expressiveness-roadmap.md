@@ -186,8 +186,10 @@ there is nothing to sort") is slightly false once this case is seen: there
 - **No date/time bucketing.** RESOLVED in 0.8.7, with an owner redesign:
   NOT the Dates cycle accessors proposed below ("cycle is not a very useful
   part of bucketing; coarser bucket is") but five package-authored label
-  verbs — `yyyy` `yyyyq` `yyq` `yyyymm` `yymm` (String output; `delim` kwarg
-  on the month forms). The formats are year-first and zero-padded, so
+  verbs — `yyyy` `yyyyq` `yyq` `yyyymm` `yymm` (String output; optional
+  POSITIONAL delimiter on the month forms — owner choice, typeability over
+  the options-keyword convention: `yyyymm(t, "/")`). The formats are
+  year-first and zero-padded, so
   **lexical order is chronological order** — the same property the
   rank-prefixed verb labels rely on — and coarser buckets handle year
   boundaries correctly where a month-of-year accessor would conflate

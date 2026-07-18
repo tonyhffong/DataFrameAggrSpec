@@ -130,17 +130,17 @@ end
     @test yyyyq(d) == "2025Q3"
     @test yyq(d) == "25Q3"
     @test yyyymm(d) == "202507"
-    @test yyyymm(d; delim = "/") == "2025/07"
+    @test yyyymm(d, "/") == "2025/07"
     @test yymm(d) == "2507"
-    @test yymm(d; delim = "-") == "25-07"
+    @test yymm(d, "-") == "25-07"
     @test yyyymm(DateTime(2026, 1, 2, 13, 30)) == "202601"   # DateTime too
     @test ismissing(yyyy(missing))
-    @test ismissing(yymm(missing; delim = "/"))
+    @test ismissing(yymm(missing, "/"))
 
     # elementwise through the DSL; missing propagates
     ds = Union{Missing,Date}[Date(2025, 12, 31), missing, Date(2026, 1, 1)]
     @test isequal(dim"yyyymm(t)".f(ds), ["202512", missing, "202601"])
-    @test dim"yyyymm(t, delim = \"/\")".f([d]) == ["2025/07"]
+    @test dim"yyyymm(t, \"/\")".f([d]) == ["2025/07"]
     @test dim"yyq(t)".f([d]) == ["25Q3"]
 
     # THE property: lexical order is chronological order
@@ -148,7 +148,7 @@ end
     @test issorted(yyyy.(seq))
     @test issorted(yyyyq.(seq))
     @test issorted(yyyymm.(seq))
-    @test issorted(yyyymm.(seq, delim = "/"))
+    @test issorted(yyyymm.(seq, "/"))   # delimiter broadcasts as a scalar
 
     # as a chain key across a year boundary (calendar month, not month-of-year)
     df = DataFrame(t = [Date(2025, 12, 30), Date(2025, 12, 31), Date(2026, 1, 5)],

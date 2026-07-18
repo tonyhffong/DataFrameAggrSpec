@@ -404,9 +404,9 @@ list and reduce — a pure-Symbol chain is just a plain group-by.)
 - **`uniqvalue`**, **`countuniq`**, **`unionall`** — the single unique value /
   count-distinct / flattened union.
 - **`yyyy` / `yyyyq` / `yyq` / `yyyymm` / `yymm`** — calendar-bucket labels
-  (`"2025Q3"`, `"202507"`, `delim` kwarg for `"2025/07"`) whose lexical order
-  is chronological order — coarser buckets, not cycles, so year boundaries
-  group correctly.
+  (`"2025Q3"`, `"202507"`; optional delimiter: `yyyymm(t, "/")` → `"2025/07"`)
+  whose lexical order is chronological order — coarser buckets, not cycles,
+  so year boundaries group correctly.
 
 ## Trust boundary
 

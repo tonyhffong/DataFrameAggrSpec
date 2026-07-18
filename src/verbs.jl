@@ -705,21 +705,23 @@ end
 # dayofweek) are deliberately NOT shipped: coarser buckets are what pivot
 # keys need; a host can registerop! any Dates accessor for seasonality.
 # Each takes a single Date/DateTime (elementwise in specs -- they register
-# broadcast-wrapped); missing propagates. `delim` follows the house verb
-# convention: data positional, options keyword.
+# broadcast-wrapped; strings broadcast as scalars, so the delimiter rides
+# along). missing propagates. `delim` is POSITIONAL by owner choice -- a
+# deliberate exception to the options-keyword convention, for typeability in
+# TUI fields: yyyymm(t, "/") beats yyyymm(t, delim = "/").
 twodigit(x::Integer) = lpad(x, 2, '0')
 
 yyyy(d::Dates.TimeType) = lpad(year(d), 4, '0')                # "2025"
 yyyyq(d::Dates.TimeType) = yyyy(d) * "Q" * string(quarterofyear(d))      # "2025Q3"
 yyq(d::Dates.TimeType) =
     twodigit(mod(year(d), 100)) * "Q" * string(quarterofyear(d))         # "25Q3"
-yyyymm(d::Dates.TimeType; delim::AbstractString = "") =
+yyyymm(d::Dates.TimeType, delim::AbstractString = "") =
     yyyy(d) * delim * twodigit(month(d))                       # "202507", "2025/07"
-yymm(d::Dates.TimeType; delim::AbstractString = "") =
+yymm(d::Dates.TimeType, delim::AbstractString = "") =
     twodigit(mod(year(d), 100)) * delim * twodigit(month(d))   # "2507", "25/07"
 
 for f in (:yyyy, :yyyyq, :yyq, :yyyymm, :yymm)
-    @eval $f(::Missing; kwargs...) = missing
+    @eval $f(::Missing, args...) = missing
 end
 
 # where: label a Boolean condition -- the true side reads as the condition

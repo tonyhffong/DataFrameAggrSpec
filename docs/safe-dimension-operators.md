@@ -131,8 +131,8 @@ deliberately *not* shipped — coarser buckets are what pivot keys need;
 | `yyyy` | `"2025"` | `dim"yyyy(t)"` |
 | `yyyyq` | `"2025Q3"` | `dim"yyyyq(t)"` |
 | `yyq` | `"25Q3"` | `dim"yyq(t)"` |
-| `yyyymm` | `"202507"`; kwarg `delim` — `yyyymm(t, delim = "/")` → `"2025/07"` | `dim"yyyymm(t)"` |
-| `yymm` | `"2507"`; same `delim` kwarg | `dim"yymm(t, delim = \"-\")"` |
+| `yyyymm` | `"202507"`; optional positional delimiter — `yyyymm(t, "/")` → `"2025/07"` | `dim"yyyymm(t)"` |
+| `yymm` | `"2507"`; same optional delimiter | `dim"yymm(t, \"-\")"` |
 
 ```julia
 agg(df, [:ym => dim"yyyymm(t)"]; hints, allbut = [:t])
@@ -199,4 +199,5 @@ Host-registered operators are deliberately **not** listed here — this document
 covers only the shipped defaults.
 
 Verb style convention: **data positional, options keyword** (`strjoinuniq`'s
-positional `sep`/`limit` predate the convention).
+positional `sep`/`limit` predate the convention; the date buckets' positional
+delimiter is a deliberate exception for typeability — `yyyymm(t, "/")`).
