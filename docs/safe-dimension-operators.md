@@ -50,10 +50,29 @@ to window. Force the kind (and attach ordering or extra grouping keys) with
 | `discretize` | bin numbers into ranked `CategoricalArray` labels; break form `discretize(x, [b1, b2]; ...)` with kwargs `boundedness` (`:unbounded`/`:boundedbelow`/`:boundedabove`/`:bounded`), `leftequal`, `absolute`, `rank`, `ranksep`, `label`, `compact`, `reverse` + number formatting (`prefix`, `suffix`, `scale`, `precision`, `commas`, ...); quantile form `discretize(x, quantiles = [...])` or `discretize(x, ngroups = 4)` | `dim"discretize(TestScr, quantiles=[.25,.5,.75])"`, `dim"discretize(x, [0, 10], boundedness = :boundedbelow)"` |
 | `quantiles` | `quantiles(measure, [q1, q2, ...])` — label each value by the quantile bucket it falls into. Bare use ranks rows individually (window kind); add `\|> groupby(keys...)` to aggregate `measure` per group first and label the groups. Boundaries are the INNER quantiles — 0 and 1 are implied, so `[.25,.5,.75]` yields `1. [0%, 25%)` … `4. [75%, 100%]`. `ngroups = n` is the boundary-free convenience (same kwarg as `discretize`): equal-width boundaries `1/n … (n-1)/n`, so `quantiles(x, ngroups = 4)` ≡ `quantiles(x, [.25,.5,.75])`; the boundary vector is optional — bare `quantiles(x)` defaults to quartiles — and giving both boundaries and `ngroups` is an error. Kwargs: `ngroups`, `leftequal` (default `true`; `false` flips to `[0%, 25%]`, `(25%, 50%]`, …), `prefix` / `suffix` decorating the interval (`"1. <prefix> [0%, 25%) <suffix>"`) | `dim"quantiles(TestScr, [.5]) \|> groupby(District)"`, `dim"quantiles(TestScr, ngroups = 5)"` |
 | `where` | flag by a Boolean condition — the labels default to **the condition text itself**: `dim"where(sales > 100)"` labels rows `"sales > 100"` / `"Not sales > 100"`. Kwargs `true_label`, `false_label` customize (`false_label` defaults to `"Not " * true_label`, so `true_label = "big"` gives `"big"` / `"Not big"`); missing conditions label `missing`; the true label sorts first. Bare use flags rows (window kind — a scalar condition like `where(sum(sales) > 100)` flags whole partitions); add `\|> groupby(keys...)` to flag groups by their aggregates | `dim"where(sales > 100 && sales < 200)"`, `dim"where(TestScr > 35) \|> groupby(District)"` |
+| `yyyy` | coarser calendar bucket, chronologically-sortable string label: `"2025"` | `dim"yyyy(t)"` |
+| `yyyyq` | `"2025Q3"` | `dim"yyyyq(t)"` |
+| `yyq` | `"25Q3"` | `dim"yyq(t)"` |
+| `yyyymm` | `"202507"`; optional positional delimiter — `yyyymm(t, "/")` → `"2025/07"` | `dim"yyyymm(t)"` |
+| `yymm` | `"2507"`; same optional delimiter | `dim"yymm(t, \"-\")"` |
 
 `discretize` used bare is **window**-kind (bins row values); wrap in
 `dimspec(...; by = :District, kind = :pivot)` to bin *group aggregates*
 (e.g. districts by their enrollment totals).
+
+The date buckets (`yyyy`/`yyyyq`/`yyq`/`yyyymm`/`yymm`) take a single
+`Date`/`DateTime` column and apply elementwise (`missing` propagates); the
+string output's lexical order is chronological order (year first,
+zero-padded), making them ready-made pivot keys. Cycle accessors
+(month-of-year, day-of-week) are deliberately *not* shipped — coarser buckets
+are what pivot keys need; `registerop!` any `Dates` accessor if a host wants
+seasonality.
+
+```julia
+agg(df, [:ym => dim"yyyymm(t)"]; hints, allbut = [:t])
+# one row per CALENDAR month -- year boundaries handled correctly, unlike a
+# month-of-year accessor, which would conflate 2025-12 with 2026-12
+```
 
 ## Order-based operators (window kind, pair with `order`)
 
@@ -116,29 +135,6 @@ is never reduced; each group's label broadcasts back to its member rows.
 Presence of `groupby` is what makes a spec pivot-kind. Verbs whose grouping
 column is data in the spec (`topnames`' 1st argument) imply their grouping and
 reject an additional `groupby`.
-
-## Date bucketing
-
-Coarser calendar buckets as **string labels whose lexical order is
-chronological order** (year first, zero-padded) — ready-made pivot keys.
-Each takes a single `Date`/`DateTime` column and applies elementwise;
-`missing` propagates. Cycle accessors (month-of-year, day-of-week) are
-deliberately *not* shipped — coarser buckets are what pivot keys need;
-`registerop!` any `Dates` accessor if a host wants seasonality.
-
-| Operator | Output | Example |
-|---|---|---|
-| `yyyy` | `"2025"` | `dim"yyyy(t)"` |
-| `yyyyq` | `"2025Q3"` | `dim"yyyyq(t)"` |
-| `yyq` | `"25Q3"` | `dim"yyq(t)"` |
-| `yyyymm` | `"202507"`; optional positional delimiter — `yyyymm(t, "/")` → `"2025/07"` | `dim"yyyymm(t)"` |
-| `yymm` | `"2507"`; same optional delimiter | `dim"yymm(t, \"-\")"` |
-
-```julia
-agg(df, [:ym => dim"yyyymm(t)"]; hints, allbut = [:t])
-# one row per CALENDAR month -- year boundaries handled correctly, unlike a
-# month-of-year accessor, which would conflate 2025-12 with 2026-12
-```
 
 ## Group-relative measures (window kind)
 

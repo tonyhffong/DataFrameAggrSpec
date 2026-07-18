@@ -64,6 +64,10 @@ for f in (
     SafeOps[Symbol(f)] = f
 end
 
+# nrow: DataFrames.jl-flavored alias for length -- group row count without
+# reaching for `count`, whose Base semantics (number of trues) are unrelated
+SafeOps[:nrow] = length
+
 # scalar functions apply elementwise to columns. ismissing/coalesce are the
 # row-level missing tools (flag / replace -- skipmissing covers drop); they
 # ship under their Julia names on purpose: the registry is a projection of

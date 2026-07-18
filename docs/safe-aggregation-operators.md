@@ -44,6 +44,7 @@ Whole-vector functions that produce the aggregate value.
 | `maximum` | largest value | `aggr"maximum(_)"` |
 | `extrema` | `(min, max)` tuple | `aggr"extrema(_)"` |
 | `length` | group row count | `aggr"length(_)"` |
+| `nrow` | group row count (DataFrames.jl-flavored alias for `length`) | `aggr"nrow"` |
 | `count` | number of `true`s | `aggr"count(_ > 0)"` |
 | `first` | first value in the group | `aggr"first(_)"` |
 | `last` | last value in the group | `aggr"last(_)"` |

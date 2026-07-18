@@ -21,6 +21,7 @@ using Test
     @test aggr"maximum(_)".f(v) == 4.0
     @test aggr"extrema(_)".f(v) == (1.0, 4.0)
     @test aggr"length(_)".f(v) == 4
+    @test aggr"nrow".f(v) == 4
     @test aggr"count(_ > 2)".f(v) == 2
     @test aggr"first(_)".f(v) == 4.0
     @test aggr"last(_)".f(v) == 2.0
