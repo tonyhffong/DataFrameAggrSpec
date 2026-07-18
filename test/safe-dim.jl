@@ -74,10 +74,23 @@ end
     @test string(quantiles(v, [0.125])[4]) == "2. [12.5%, 100%]"
     @test ismissing(quantiles([1.0, missing, 3.0], [0.5])[2])
 
+    # ngroups convenience: equal-width boundaries 1/n .. (n-1)/n
+    @test string.(quantiles(v; ngroups = 4)) == string.(quantiles(v, [0.25, 0.5, 0.75]))
+    @test string.(quantiles(v)) == string.(quantiles(v; ngroups = 4))   # bare = quartiles
+    @test string(quantiles(v; ngroups = 2)[1]) == "1. [0%, 50%)"
+    # terciles hit the 2-decimal percent cap
+    @test string.(quantiles([1.0, 2.0, 3.0]; ngroups = 3)) ==
+          ["1. [0%, 33.33%)", "2. [33.33%, 66.67%)", "3. [66.67%, 100%]"]
+    # string-spec forms (window kind, kwarg in both spellings)
+    @test string.(dim"quantiles(x, ngroups = 4)".f(v)) == string.(quantiles(v; ngroups = 4))
+    @test string.(dim"quantiles(x; ngroups = 2)".f(v)) == string.(quantiles(v; ngroups = 2))
+
     # validation
     @test_throws ErrorException quantiles(v, [0.5, 0.25])
     @test_throws ErrorException quantiles(v, [0.0, 0.5])
     @test_throws ErrorException quantiles(v, Float64[])
+    @test_throws ErrorException quantiles(v, [0.5]; ngroups = 4)   # mutually exclusive
+    @test_throws ErrorException quantiles(v; ngroups = 1)
 
     # pivot kind comes from the universal groupby modifier
     df = sddf()

@@ -197,17 +197,30 @@ there is nothing to sort") is slightly false once this case is seen: there
   (Original analysis: `year/month/quarter/dayofweek` are `bcast`-wrappable
   stdlib functions; `discretize` covers numerics only.)
 - **`quantiles(x, qs)` lacks an `ngroups` convenience** that `discretize` has
-  ("quartiles" requires typing `[.25, .5, .75]`).
+  ("quartiles" requires typing `[.25, .5, .75]`). RESOLVED in 0.8.8:
+  `ngroups` is a KWARG (the same word and spelling as `discretize`'s, for
+  vocabulary consistency — the positional date-delim was a flagged exception,
+  not the convention), and the boundary vector STAYS positional, merely
+  becoming optional (demoting it to a kwarg would have broken every existing
+  `quantiles(TestScr, [.5])` spec). Bare `quantiles(x)` defaults to quartiles,
+  mirroring `discretize`'s `ngroups = 4` default; boundaries + `ngroups`
+  together is an error (conflicts are errors, never precedence). `pctstr`
+  gained a 2-decimal cap so `ngroups = 3` prints `33.33%`.
 
 ## #6 Doc/comment drift noticed along the way
 
-- src/dimension.jl (`pivot_groupkeys` comment) still says "quantiles'
-  grouping-column array (argument 3)" — `quantiles` is no longer a registered
-  classifier.
-- The package CLAUDE.md describes `registerclassifier!(name, argpos; many)` —
-  there is no `many` kwarg in the code.
-- src/pivot.jl transform comment shows `df ∘ dim(chain)`, which README /
-  CLAUDE.md explicitly say is *not* supported ("no `∘`-on-frame sugar").
+**Status: RESOLVED in 0.8.4** (verified 2026-07-18 against 0.8.7). All three
+items were fixed in the same commit that shipped `dim"where()"`:
+
+- src/dimension.jl (`pivot_groupkeys` comment): the stale "quantiles'
+  grouping-column array (argument 3)" clause was deleted — the comment now
+  cites only topnames (`quantiles` is no longer a registered classifier).
+- The package CLAUDE.md now documents `registerclassifier!(name, argpos)`
+  with no `many` kwarg, matching the code (the `many` variant never reached
+  a committed version).
+- src/pivot.jl transform comment dropped the `df ∘ dim(chain)` example,
+  which README / CLAUDE.md explicitly say is *not* supported ("no
+  `∘`-on-frame sugar") — only `df |> dim(chain)` and `(t2 ∘ t1)(df)` remain.
 
 ## Plan for #3 (agreed fix)
 

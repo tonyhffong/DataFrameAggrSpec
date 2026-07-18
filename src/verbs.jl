@@ -637,9 +637,11 @@ function strjoinuniq(x::AbstractVector, sep::AbstractString = ",", limit::Intege
     length(s) <= limit ? s : first(s, max(limit - 1, 0)) * "…"
 end
 
-# percent label for a quantile boundary: 0.25 -> "25%", 0.125 -> "12.5%"
+# percent label for a quantile boundary: 0.25 -> "25%", 0.125 -> "12.5%";
+# capped at 2 decimals so ngroups-derived thirds print "33.33%", not
+# "33.333333333333336%"
 function pctstr(x::Real)
-    v = x * 100
+    v = round(x * 100, digits = 2)
     r = round(v)
     (abs(v - r) < 1e-9 ? string(Int(r)) : string(v)) * "%"
 end
@@ -650,6 +652,12 @@ end
 #   1. [0%, 25%)   2. [25%, 50%)   3. [50%, 75%)   4. [75%, 100%]
 # (leftequal = false flips to "[0%, 25%]", "(25%, 50%]", ...). `prefix` /
 # `suffix` decorate the interval: "1. <prefix> [0%, 25%) <suffix>".
+# `ngroups = n` is the boundary-free convenience (same kwarg as discretize):
+# equal-width boundaries 1/n .. (n-1)/n, so quantiles(x, ngroups = 4) ==
+# quantiles(x, [.25, .5, .75]). The boundary vector stays positional but is
+# now optional -- bare quantiles(x) defaults to quartiles, mirroring
+# discretize's ngroups default; giving BOTH qs and ngroups is an error
+# (conflicts are errors, never precedence).
 # In a dim spec, bare use buckets rows individually (window kind); grouping is
 # declared via the universal modifier --
 #   dim"quantiles(TestScr, [.25,.5,.75]) |> groupby(District)"
@@ -657,11 +665,20 @@ end
 # buckets the districts (Julia-side: dimspec(...; by=:District, kind=:pivot)).
 function quantiles(
     measure::AbstractVector,
-    qs::AbstractVector{<:Real};
+    qs::Union{Nothing,AbstractVector{<:Real}} = nothing;
+    ngroups::Union{Nothing,Integer} = nothing,
     leftequal::Bool = true,
     prefix::AbstractString = "",
     suffix::AbstractString = "",
 )
+    qs !== nothing && ngroups !== nothing && error(
+        "quantiles: explicit boundaries and ngroups are mutually exclusive -- give one or the other",
+    )
+    if qs === nothing
+        n = ngroups === nothing ? 4 : Int(ngroups)
+        n >= 2 || error("quantiles: ngroups must be at least 2")
+        qs = collect(1:n-1) ./ n
+    end
     isempty(qs) && error("quantiles: need at least one quantile boundary")
     all(diff(collect(Float64, qs)) .> 0) ||
         error("quantiles: boundaries must be strictly increasing")
