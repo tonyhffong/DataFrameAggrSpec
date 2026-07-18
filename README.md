@@ -40,6 +40,18 @@ At the core of this package there are two operator pillars, one composition rule
        alt="dim adds a sibling-computed column to every row; agg reduces to one row per key">
 </p>
 
+## Contents
+
+- [Dimensioning](#dimensioning)
+  - [Chains: dimensions become pivot keys](#chains-dimensions-become-pivot-keys)
+- [Aggregation](#aggregation)
+  - [Composite aggregation](#composite-aggregation)
+- [Pipelines](#pipelines)
+- [The safe grammar, and extending it](#the-safe-grammar-and-extending-it)
+- [Advanced: trusted Expr specs and the two dimension kinds](#advanced-trusted-expr-specs-and-the-two-dimension-kinds)
+- [Presentation verbs](#presentation-verbs)
+- [Trust boundary](#trust-boundary)
+
 ## Dimensioning
 
 Dimensioning **adds new columns** to a DataFrame. What makes a *dimension*
