@@ -23,12 +23,13 @@
   </defs>
 
   <!-- forward arrow: declared dimension is a key downstream -->
-  <text class="cap muted" x="470" y="30" text-anchor="middle">…once declared, immediately a pivot key for everything to its right</text>
-  <path class="arrow" d="M370,74 C440,40 630,40 700,76" marker-end="url(#ah2)"/>
+  <text class="cap muted" x="432" y="30" text-anchor="middle">…once declared, immediately a pivot key for everything to its right</text>
+  <path class="arrow" d="M280,74 C320,38 545,38 615,76" marker-end="url(#ah2)"/>
 
   <!-- labels above boxes -->
   <text class="lbl muted"  x="50"  y="66" text-anchor="middle">existing key</text>
-  <text class="lbl accent" x="242" y="66" text-anchor="middle">declares a dimension = new key</text>
+  <text class="lbl accent" x="200" y="66" text-anchor="middle">declares a dimension = new key</text>
+  <text class="lbl muted"  x="445" y="66" text-anchor="middle">existing key</text>
 
   <!-- chain entry boxes -->
   <rect class="keybox" x="10"  y="78" width="80"  height="56" rx="8"/>
