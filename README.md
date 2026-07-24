@@ -11,11 +11,12 @@ DSL defined here safely.
 - [Introduction](#introduction)
 - [Dimensioning](#dimensioning)
   - [Chains: dimensions become pivot keys](#chains-dimensions-become-pivot-keys)
+  - [The two dimension kinds](#the-two-dimension-kinds)
 - [Aggregation](#aggregation)
   - [Composite aggregation](#composite-aggregation)
 - [Pipelines](#pipelines)
 - [The safe grammar, and extending it](#the-safe-grammar-and-extending-it)
-- [Advanced: trusted Expr specs and the two dimension kinds](#advanced-trusted-expr-specs-and-the-two-dimension-kinds)
+- [Advanced: trusted Expr specs](#advanced-trusted-expr-specs)
 - [Presentation verbs](#presentation-verbs)
 - [Trust boundary](#trust-boundary)
 
@@ -208,6 +209,47 @@ More chain forms:
 - Pure runtime-string chains work for GUI/config paths:
   `["County", ["top5d", "topnames(District, TestScr, 5)"], "District"]`.
 
+### The two dimension kinds
+
+Under the hood every dimension evaluates in one of
+two ways, deciding what a column reference binds to (picked by inference, or
+forced with `dimspec(...; kind = ...)`); the kinds are semantics, not types you
+construct:
+
+- **window** — a column binds to the partition's row-level subvector (sorted by
+  `order` if given). The spec result is a scalar (broadcast to the partition)
+  or a partition-length vector. Covers group totals, shares, z-scores,
+  `cumsum`/`lag`/`lead`/ranks. Bare specs default to this kind.
+- **pivot** — classifies *groups*: within each context partition, rows are
+  grouped by the dimension's `by` keys, the referenced columns are aggregated
+  per group (via `AggrHints`), the spec runs over those per-group vectors, and
+  each group's label is broadcast back to its member rows. This is the home of
+  `topnames` / `quantiles` / `discretize`-over-group-sums. Classifier verbs infer
+  this kind (see `registerclassifier!`); force it with `dimspec(...; kind = :pivot)`.
+  An `order` (in-string `|> orderby(...)`) sorts the *groups* — by keys or
+  their aggregates — before the spec runs, for cumulative/Pareto shapes.
+
+<p align="center">
+  <img src="docs/assets/window-vs-pivot.svg" width="700"
+       alt="window kind computes each row's value from its ordered sibling rows (the orderby modifier); pivot kind aggregates groups, classifies them, and broadcasts each label to the group's member rows (the groupby modifier)">
+</p>
+
+`dimspec(ex; by = extra_grouping_keys, order = ..., kind = :window | :pivot)`
+is the full options carrier — the Julia-side equivalent of the in-string
+`|> orderby(...)` / `|> groupby(...)` modifiers (specifying the same option
+both ways is an error, not a precedence game). **The `by` rule**: `by` always
+means the grouping
+keys a dimension declares *itself*; a chain's left context layers on top — for
+a window dimension it is unioned into the partition, for a pivot dimension it
+becomes the outer context.
+
+`order` accepts `:col`, `:col => :asc/:desc`, vectors of those, and string
+forms (`":date => :desc"`). Results are scattered back through the inverse
+permutation, so output stays aligned with the original rows.
+
+(`agg` ≡ materialize the chain's declared dimensions, then group by the full key
+list and reduce — a pure-Symbol chain is just a plain group-by.)
+
 ## Aggregation
 
 Aggregation **reduces a group of rows to one value per column**. The main entry
@@ -285,6 +327,11 @@ district over several years, "the average population" should sum the districts
 aggr"mean(sum(_) |> groupby(year))"      # sum within each year, then average
 aggr"last(sum(_) |> groupby(year))"      # the latest year's total
 ```
+
+<p align="center">
+  <img src="docs/assets/composite-aggregation.svg" width="760"
+       alt="the outer chain gives a cohort its meaning and runs the spec once per cohort; within one cohort, the optional nested groupby stages the rows before the outer reduction runs">
+</p>
 
 The nested part evaluates the inner spec once per key combination and hands
 the key-sorted results to the outer reduction. Keys may be computed
@@ -381,7 +428,7 @@ registerop!(:tophalf, (name, measure) -> ...)
 registerclassifier!(:tophalf, 1)               # dim"tophalf(District, TestScr)"
 ```
 
-## Advanced: trusted Expr specs and the two dimension kinds
+## Advanced: trusted Expr specs
 
 Everything below is for package developers who need to go beyond the safe
 operators — full Julia inside a spec.
@@ -414,45 +461,6 @@ dim(df, [:County, :top1 => dim"topnames(District, TestScr, 1)"],   # user-typed 
         [:County, :top1, :share => :( :TestScr ./ sum(:TestScr) )], # trusted measure
         [:County, :top1, :cum => dim"cumsum(EnrlTot) |> orderby(TestScr)"])
 ```
-
-**The two dimension kinds.** Under the hood every dimension evaluates in one of
-two ways, deciding what a column reference binds to (picked by inference, or
-forced with `dimspec(...; kind = ...)`); the kinds are semantics, not types you
-construct:
-
-- **window** — a column binds to the partition's row-level subvector (sorted by
-  `order` if given). The spec result is a scalar (broadcast to the partition)
-  or a partition-length vector. Covers group totals, shares, z-scores,
-  `cumsum`/`lag`/`lead`/ranks. Bare specs default to this kind.
-- **pivot** — classifies *groups*: within each context partition, rows are
-  grouped by the dimension's `by` keys, the referenced columns are aggregated
-  per group (via `AggrHints`), the spec runs over those per-group vectors, and
-  each group's label is broadcast back to its member rows. This is the home of
-  `topnames` / `quantiles` / `discretize`-over-group-sums. Classifier verbs infer
-  this kind (see `registerclassifier!`); force it with `dimspec(...; kind = :pivot)`.
-  An `order` (in-string `|> orderby(...)`) sorts the *groups* — by keys or
-  their aggregates — before the spec runs, for cumulative/Pareto shapes.
-
-<p align="center">
-  <img src="docs/assets/window-vs-pivot.svg" width="700"
-       alt="window kind computes each row's value from its ordered sibling rows (the orderby modifier); pivot kind aggregates groups, classifies them, and broadcasts each label to the group's member rows (the groupby modifier)">
-</p>
-
-`dimspec(ex; by = extra_grouping_keys, order = ..., kind = :window | :pivot)`
-is the full options carrier — the Julia-side equivalent of the in-string
-`|> orderby(...)` / `|> groupby(...)` modifiers (specifying the same option
-both ways is an error, not a precedence game). **The `by` rule**: `by` always
-means the grouping
-keys a dimension declares *itself*; a chain's left context layers on top — for
-a window dimension it is unioned into the partition, for a pivot dimension it
-becomes the outer context.
-
-`order` accepts `:col`, `:col => :asc/:desc`, vectors of those, and string
-forms (`":date => :desc"`). Results are scattered back through the inverse
-permutation, so output stays aligned with the original rows.
-
-(`agg` ≡ materialize the chain's declared dimensions, then group by the full key
-list and reduce — a pure-Symbol chain is just a plain group-by.)
 
 ## Presentation verbs
 

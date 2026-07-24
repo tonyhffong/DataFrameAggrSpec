@@ -1,0 +1,116 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 820 320" font-family="-apple-system, 'Segoe UI', Helvetica, Arial, sans-serif" role="img" aria-label="Composite aggregation: the outer chain gives a cohort its meaning; the aggr spec runs once per cohort; within one cohort, an optional nested groupby stages the rows before the outer reduction runs">
+  <style>
+    :root { --fg:#1f2328; --muted:#59636e; --line:#d1d9e0; --box:#f6f8fa;
+            --accent:#0969da; --accent-tint:rgba(9,105,218,.12);
+            --tint-e:rgba(9,105,218,.08); --tint-w:rgba(154,103,0,.10); }
+    @media (prefers-color-scheme: dark) {
+      :root { --fg:#e6edf3; --muted:#9198a1; --line:#3d444d; --box:#151b23;
+              --accent:#4493f8; --accent-tint:rgba(68,147,248,.18);
+              --tint-e:rgba(68,147,248,.12); --tint-w:rgba(210,153,34,.16); }
+    }
+    text { fill:var(--fg); }
+    .mono { font-family:ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+    .muted { fill:var(--muted); }
+    .accent { fill:var(--accent); }
+    .cell { font-size:12px; }
+    .hdr  { font-size:12px; font-weight:600; }
+    .code { font-size:12.5px; }
+    .cap  { font-size:12px; }
+    .sm   { font-size:11px; }
+    .tline { stroke:var(--line); stroke-width:1; }
+    .arrow { stroke:var(--muted); stroke-width:1.5; fill:none; }
+    .specbox { fill:var(--accent-tint); stroke:var(--accent); stroke-width:1; }
+  </style>
+  <defs>
+    <marker id="ah4" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" style="fill:var(--muted)"/>
+    </marker>
+  </defs>
+
+  <!-- ================= LEFT: the chain gives the cohort meaning ================= -->
+  <text x="16" y="28" font-size="13" font-weight="600">the chain — what makes a cohort</text>
+  <text class="mono code" x="16" y="48"><tspan class="accent">[:county]</tspan> is the chain</text>
+  <text class="sm muted" x="16" y="64">agg(df, [:county]; cols = [:pop =&gt; aggr"…"])</text>
+
+  <!-- source table: header 86-108, 6 data rows x 22px, table spans 86-240 -->
+  <rect x="16" y="108" width="216" height="22" fill="var(--tint-e)"/>
+  <rect x="16" y="130" width="216" height="22" fill="var(--tint-e)"/>
+  <rect x="16" y="152" width="216" height="22" fill="var(--tint-e)"/>
+  <rect x="16" y="174" width="216" height="22" fill="var(--tint-e)"/>
+  <rect x="16" y="196" width="216" height="22" fill="var(--tint-w)"/>
+  <rect x="16" y="218" width="216" height="22" fill="var(--tint-w)"/>
+  <rect x="16" y="86" width="216" height="154" fill="none" class="tline"/>
+  <line x1="16" y1="108" x2="232" y2="108" class="tline"/>
+  <line x1="16" y1="130" x2="232" y2="130" class="tline"/>
+  <line x1="16" y1="152" x2="232" y2="152" class="tline"/>
+  <line x1="16" y1="174" x2="232" y2="174" class="tline"/>
+  <line x1="16" y1="196" x2="232" y2="196" class="tline"/>
+  <line x1="16" y1="218" x2="232" y2="218" class="tline"/>
+  <line x1="70"  y1="86" x2="70"  y2="240" class="tline"/>
+  <line x1="124" y1="86" x2="124" y2="240" class="tline"/>
+  <line x1="178" y1="86" x2="178" y2="240" class="tline"/>
+  <text class="hdr" x="43"  y="102" text-anchor="middle">county</text>
+  <text class="hdr" x="97"  y="102" text-anchor="middle">district</text>
+  <text class="hdr" x="151" y="102" text-anchor="middle">year</text>
+  <text class="hdr" x="205" y="102" text-anchor="middle">pop</text>
+  <g class="mono cell">
+    <text x="43" y="124" text-anchor="middle">C1</text><text x="97" y="124" text-anchor="middle">d1</text><text x="151" y="124" text-anchor="middle">2020</text><text x="205" y="124" text-anchor="middle">10.0</text>
+    <text x="43" y="146" text-anchor="middle">C1</text><text x="97" y="146" text-anchor="middle">d2</text><text x="151" y="146" text-anchor="middle">2020</text><text x="205" y="146" text-anchor="middle">20.0</text>
+    <text x="43" y="168" text-anchor="middle">C1</text><text x="97" y="168" text-anchor="middle">d1</text><text x="151" y="168" text-anchor="middle">2021</text><text x="205" y="168" text-anchor="middle">15.0</text>
+    <text x="43" y="190" text-anchor="middle">C1</text><text x="97" y="190" text-anchor="middle">d2</text><text x="151" y="190" text-anchor="middle">2021</text><text x="205" y="190" text-anchor="middle">25.0</text>
+    <text x="43" y="212" text-anchor="middle">C2</text><text x="97" y="212" text-anchor="middle">d1</text><text x="151" y="212" text-anchor="middle">2020</text><text x="205" y="212" text-anchor="middle">5.0</text>
+    <text x="43" y="234" text-anchor="middle">C2</text><text x="97" y="234" text-anchor="middle">d1</text><text x="151" y="234" text-anchor="middle">2021</text><text x="205" y="234" text-anchor="middle">15.0</text>
+  </g>
+  <text class="cap muted" x="16" y="258">one ordinary group-by, run once — each</text>
+  <text class="cap muted" x="16" y="274">county's rows become <tspan class="mono" style="fill:var(--fg)">_</tspan> for one call</text>
+  <text class="cap muted" x="16" y="290">to the spec (highlighted: C1's cohort)</text>
+
+  <!-- ================= CENTER: the spec itself ================= -->
+  <rect class="specbox" x="279" y="100" width="270" height="96" rx="8"/>
+  <text class="mono code" x="295" y="126">aggr"mean(</text>
+  <text class="mono code accent" x="315" y="150">sum(_) |&gt; groupby(year)</text>
+  <text class="mono code" x="295" y="174">)"</text>
+
+  <path class="arrow" d="M232,150 C245,150 247,148 277,148" marker-end="url(#ah4)"/>
+  <path class="arrow" d="M551,148 C565,148 567,121 594,121" marker-end="url(#ah4)"/>
+
+  <text class="cap muted" x="279" y="216">① <tspan class="mono">sum(_) |&gt; groupby(year)</tspan> — the nested</text>
+  <text class="cap muted" x="279" y="232">groupby, staged first; entirely optional</text>
+  <text class="cap muted" x="279" y="252">② <tspan class="mono">mean(…)</tspan> — the outer reduction, always</text>
+  <text class="cap muted" x="279" y="268">runs once per cohort, after ① completes</text>
+
+  <!-- ================= RIGHT: inside ONE cohort, the staging ================= -->
+  <text x="596" y="28" font-size="13" font-weight="600">inside cohort C1 — ① then ②</text>
+  <text class="sm muted" x="596" y="48">just C1's 4 rows (district, year, pop)</text>
+
+  <!-- mini table: header 66-88, 4 data rows x 22px, table spans 66-176 -->
+  <rect x="596" y="88"  width="164" height="22" fill="var(--tint-e)"/>
+  <rect x="596" y="110" width="164" height="22" fill="var(--tint-e)"/>
+  <rect x="596" y="132" width="164" height="22" fill="var(--tint-w)"/>
+  <rect x="596" y="154" width="164" height="22" fill="var(--tint-w)"/>
+  <rect x="596" y="66" width="164" height="110" fill="none" class="tline"/>
+  <line x1="596" y1="88"  x2="760" y2="88"  class="tline"/>
+  <line x1="596" y1="110" x2="760" y2="110" class="tline"/>
+  <line x1="596" y1="132" x2="760" y2="132" class="tline"/>
+  <line x1="596" y1="154" x2="760" y2="154" class="tline"/>
+  <line x1="651" y1="66" x2="651" y2="176" class="tline"/>
+  <line x1="706" y1="66" x2="706" y2="176" class="tline"/>
+  <text class="hdr" x="623" y="82"  text-anchor="middle">district</text>
+  <text class="hdr" x="678" y="82"  text-anchor="middle">year</text>
+  <text class="hdr" x="733" y="82"  text-anchor="middle">pop</text>
+  <g class="mono cell">
+    <text x="623" y="104" text-anchor="middle">d1</text><text x="678" y="104" text-anchor="middle">2020</text><text x="733" y="104" text-anchor="middle">10.0</text>
+    <text x="623" y="126" text-anchor="middle">d2</text><text x="678" y="126" text-anchor="middle">2020</text><text x="733" y="126" text-anchor="middle">20.0</text>
+    <text x="623" y="148" text-anchor="middle">d1</text><text x="678" y="148" text-anchor="middle">2021</text><text x="733" y="148" text-anchor="middle">15.0</text>
+    <text x="623" y="170" text-anchor="middle">d2</text><text x="678" y="170" text-anchor="middle">2021</text><text x="733" y="170" text-anchor="middle">25.0</text>
+  </g>
+
+  <path class="arrow" d="M678,182 L678,200" marker-end="url(#ah4)"/>
+
+  <text class="sm mono muted" x="596" y="220">① groupby(year), sum(_) →</text>
+  <text class="sm mono muted" x="596" y="236">[2020 → 30, 2021 → 40]</text>
+  <text class="sm mono" x="596" y="258">② mean([30, 40]) → <tspan class="accent" font-weight="600">35</tspan></text>
+
+  <text class="cap muted" x="596" y="282">without ①, a bare <tspan class="mono">mean(_)</tspan> would</text>
+  <text class="cap muted" x="596" y="298">average all 4 raw rows instead: 17.5</text>
+</svg>
