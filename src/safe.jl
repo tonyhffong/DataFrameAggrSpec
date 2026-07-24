@@ -133,6 +133,20 @@ struct SafeAggrSpec
     cols::Vector{Symbol}    # first-encounter order; may contain :_
 end
 
+# a `groupby(...)` key that is a COMPUTED expression rather than a bare
+# column (e.g. yyyymm(date)) -- gensym'd synthetic column name to materialize
+# before DataFrames.groupby (PivotDim's inner grouping requires real
+# columns), the compiled elementwise thunk (compile_node contract:
+# f(vals::Tuple) -> vector, same call convention as compile_grouped's nested
+# groupby keys), and the REAL columns it reads. required_columns/checkcols
+# validate `.cols`, never `.name` -- the synthetic name is not a column that
+# exists on the host's frame.
+struct GroupByKey
+    name::Symbol
+    f::Function
+    cols::Vector{Symbol}
+end
+
 struct SafeDimSpec
     source::String
     fname::Symbol
@@ -143,8 +157,10 @@ struct SafeDimSpec
                            # nothing -- feeds pivot_groupkeys (topnames)
     order::Vector{Pair{Symbol,Bool}}  # from a peeled `|> orderby(cols...)`;
                                       # consumed by WindowDim
-    by::Vector{Symbol}     # from a peeled `|> groupby(keys...)`; marks pivot
-end                        # kind, consumed by PivotDim as its inner grouping
+    by::Vector{Union{Symbol,GroupByKey}}  # from a peeled `|> groupby(keys...)`;
+end                        # marks pivot kind, consumed by PivotDim as its
+                           # inner grouping -- entries are bare columns or
+                           # computed GroupByKeys
 
 Base.:(==)(a::SafeAggrSpec, b::SafeAggrSpec) = a.source == b.source
 Base.hash(a::SafeAggrSpec, h::UInt) = hash((:SafeAggrSpec, a.source), h)
@@ -423,7 +439,7 @@ ismodifiershape(ex) =
 # interpreted structurally, never called. Returns (inner, order, by).
 function peel_modifiers(ex, what::String)
     order = Pair{Symbol,Bool}[]
-    by = Symbol[]
+    by = Union{Symbol,GroupByKey}[]
     while ismodifiershape(ex)
         combinator, lhs, rhs = ex.args[1], ex.args[2], ex.args[3]
         if ismodifiercall(lhs)
@@ -452,7 +468,11 @@ function peel_modifiers(ex, what::String)
             for a in args
                 push!(order, orderentry_parsed(a))   # :col | col => :asc/:desc
             end
-        else # :groupby -- bare columns (varargs) or one [col, ...] array
+        else # :groupby -- bare columns/computed expressions (varargs), or one
+             # [col, ...] array of PLAIN columns (unchanged; the array
+             # spelling stays symbol-only -- mixing an expression into it
+             # errors with a redirect rather than silently doing something
+             # surprising)
             isempty(by) || error(what * ": duplicate groupby modifier")
             for a in args
                 s = simple_posarg(a)
@@ -460,8 +480,23 @@ function peel_modifiers(ex, what::String)
                     push!(by, s)
                 elseif isa(s, Vector{Symbol})
                     append!(by, s)
+                elseif isa(a, Union{Number,AbstractString,Char,QuoteNode})
+                    error(what * ": groupby keys must be columns (or " *
+                          "elementwise transforms of columns, e.g. " *
+                          "yyyy(t)), got literal " * string(a))
+                elseif Base.Meta.isexpr(a, :vect)
+                    error(what * ": groupby's [ ... ] array form only " *
+                          "accepts plain column names -- write computed " *
+                          "keys as separate arguments, e.g. groupby(col1, " *
+                          "yyyymm(date))")
                 else
-                    error(what * ": groupby expects column names, got " * string(a))
+                    # a computed key, e.g. groupby(yyyymm(date)) -- compiled
+                    # exactly like a nested composite-aggregation groupby
+                    # key (compile_grouped), materialized as a real column
+                    # before DataFrames.groupby at evaluation time
+                    kcols = Symbol[]
+                    kf = compile_node(a, kcols, what)
+                    push!(by, GroupByKey(gensym(:bykey), kf, kcols))
                 end
             end
             isempty(by) && error(what * ": groupby needs at least one column")
@@ -514,9 +549,15 @@ iscondshape(ex) =
 # the TUI path, where a misspelled column would otherwise surface much later
 # as a bare DataFrames indexing error. `_` is the aggregation target, not a
 # column reference. Returns the spec for chaining.
+# flatten a `by` list (bare column Symbols and/or GroupByKeys) to the REAL
+# columns that must exist on the host's frame -- a GroupByKey's synthetic
+# gensym'd name never does. Shared by checkcols here and PivotDim's
+# required_columns (dimension.jl).
+byrefs(by) = Symbol[c for k in by for c in (isa(k, Symbol) ? (k,) : k.cols)]
+
 function checkcols(s::Union{SafeAggrSpec,SafeDimSpec}, columns::AbstractVector{Symbol})
     refs = isa(s, SafeAggrSpec) ? setdiff(s.cols, [:_]) :
-           union(s.cols, first.(s.order), s.by)
+           union(s.cols, first.(s.order), byrefs(s.by))
     for c in refs
         if !in(c, columns)
             hint = didyoumean(c, sort(columns))

@@ -1,6 +1,7 @@
 using DataFrameAggrSpec
 using DataFrames
 using CategoricalArrays
+using Dates
 using Test
 
 import DataFrameAggrSpec: WindowDim, PivotDim, dependencies   # internals, white-box tests
@@ -76,4 +77,40 @@ end
     # ctop group sums: "1. C1" = 110, "2. C2" = 50 -> top1 is "1. C1"
     @test dfb.cc ==
           ["1. 1. C1", "1. 1. C1", "1. 1. C1", "1. 1. C1", "Others", "Others"]
+end
+
+@testset "groupby modifier with a computed key composes with orderby (finding #3)" begin
+    # cumsum |> groupby(computed) |> orderby(dep) -- the Pareto idiom, but
+    # grouping on yyyymm(date) instead of an existing column. Confirms the
+    # gensym-materialized grouping path composes correctly with pivot
+    # `orderby`'s group-level sort + inverse-perm scatter-back.
+    df = DataFrame(
+        date  = Date.(2024, [1, 1, 2, 2, 3], 1),
+        sales = [10.0, 20.0, 5.0, 15.0, 100.0],
+    )
+    out = dim(df, [:cum => dim"cumsum(sales) |> groupby(yyyymm(date)) |> orderby(sales => :desc)"])
+    # bucket sums: 202401=30, 202402=20, 202403=100 -> desc order 202403,202401,202402
+    # cumsum over that order: 202403->100, 202401->130, 202402->150
+    @test out.cum == [130.0, 130.0, 150.0, 150.0, 100.0]
+end
+
+@testset "dependency aggregation on a Union{Missing,T} measure column" begin
+    # PivotDim's dependency aggregation goes through resolveaggr exactly like
+    # agg does. TestScr here has the ordinary eltype a column gets once it's
+    # ever held a missing (no actual missing values needed to trigger the
+    # bug -- every district has two DISTINCT values, which is enough for the
+    # old :uniqvalue mis-dispatch to collapse every district to missing).
+    # Before the fix this didn't just misrank -- topnames crashed with
+    # `UndefVarError: T not defined in static parameter matching`, because
+    # its `where T<:Real` signature can't bind T against an all-Missing
+    # vector.
+    df = DataFrame(
+        County   = ["C1", "C1", "C1", "C1", "C2", "C2", "C2", "C2"],
+        District = ["d1", "d1", "d2", "d2", "d3", "d3", "d4", "d4"],
+        TestScr  = Union{Missing,Float64}[10.0, 20.0, 50.0, 55.0, 30.0, 35.0, 40.0, 45.0],
+    )
+    out = dim(df, [:top2 => dim"topnames(District, TestScr, 2)"])
+    # district sums: d1=30, d2=105, d3=65, d4=85 -> top2: d2, d4
+    @test out.top2 ==
+          ["Others", "Others", "1. d2", "1. d2", "Others", "Others", "2. d4", "2. d4"]
 end

@@ -136,6 +136,19 @@ Presence of `groupby` is what makes a spec pivot-kind. Verbs whose grouping
 column is data in the spec (`topnames`' 1st argument) imply their grouping and
 reject an additional `groupby`.
 
+Keys may be **computed**, not just bare columns — `groupby(yyyymm(date))`
+buckets by a calendar bucket instead of an existing column, exactly like the
+nested composite-aggregation `groupby` below:
+
+```julia
+dim"cumsum(sales) |> groupby(yyyymm(date))"                     # bucket by calendar month
+dim"cumsum(sales) |> groupby(region, yyyymm(date))"              # mixed bare + computed keys
+```
+
+The `[col, ...]` array spelling stays plain-column-only — mix a computed
+key into it (`groupby([region, yyyymm(date)])`) and it errors with a
+redirect to the varargs form instead.
+
 A `|> groupby(...)` **nested inside** a spec argument is a different thing:
 a *computational* grouped reduction — evaluate the inner spec once per key
 combination and collect the results into a key-sorted vector (see "Composite

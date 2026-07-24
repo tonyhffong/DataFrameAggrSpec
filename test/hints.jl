@@ -29,6 +29,24 @@ using Test
     @test resolveaggr(h4, :city, String) == :uniqvalue
 
     @test_throws ErrorException AggrHints("qty" => :sum)
+
+    # Union{Missing,T} columns -- the eltype DataFrames.jl actually gives any
+    # column that has ever held a missing -- must resolve exactly like their
+    # non-nullable T, both via bytype hints and via the generic default.
+    # Before the fix, T <: K was checked on the raw (Missing-including) type,
+    # so none of these ever matched and every nullable column silently fell
+    # to the :uniqvalue catch-all.
+    hn = AggrHints(:score => :( mean(:_) ), AbstractString => :uniqvalue)
+    @test resolveaggr(hn, :score, Union{Missing,Float64}) == :( mean(:_) )   # bycol unaffected
+    @test resolveaggr(hn, :city, Union{Missing,String}) == :uniqvalue        # bytype now matches
+    @test resolveaggr(hn, :qty, Union{Missing,Int}) == :sum                  # default now matches
+
+    # a pure Missing column (all-missing) must NOT spuriously match the
+    # FIRST bytype entry just because Base.nonmissingtype(Missing) == Union{}
+    # is <: everything -- it should behave exactly as before the fix.
+    hboth = AggrHints(AbstractString => :uniqvalue, Real => :sum)
+    @test resolveaggr(hboth, :allmiss, Missing) == :uniqvalue   # == default(Missing), not the AbstractString hint by luck
+    @test resolveaggr(AggrHints(; default = _ -> :maximum), :allmiss, Missing) == :maximum
 end
 
 @testset "agg" begin
@@ -61,6 +79,33 @@ end
     # aggrvalue normalizes the scalar / 1x1-DataFrame contract
     @test aggrvalue(3) == 3
     @test aggrvalue(DataFrame(a = [7])) == 7
+end
+
+@testset "agg over a Union{Missing,T} column (no explicit hint)" begin
+    # sales has ONE missing (region W); this is the ordinary eltype DataFrames
+    # gives any column that has ever held a missing. Before the fix, the
+    # default resolved to :uniqvalue instead of :sum for the whole column
+    # (T <: Real failed on Union{Missing,Float64}), so EVERY region -- not
+    # just the one with a real missing value -- silently came back missing.
+    df = DataFrame(region = ["E", "E", "W", "W", "W"],
+                   sales  = [1.0, 2.0, 3.0, missing, 5.0])
+    out = agg(df, [:region])
+    e = out[out.region .== "E", :]
+    w = out[out.region .== "W", :]
+    @test e.sales == [3.0]         # E has no missing at all -- must sum correctly
+    @test ismissing(w.sales[1])    # W genuinely contains a missing -- Base sum propagates it
+
+    # the README's own bytype idiom, against a nullable String column with an
+    # actual missing AND a group with two distinct non-missing values
+    df2 = DataFrame(county   = ["Alameda", "Alameda", "Placer", "Placer"],
+                    district = ["A", "B", missing, "B"],
+                    score    = [10.0, 20.0, 30.0, 40.0])
+    h = AggrHints(AbstractString => aggr"strjoinuniq(_)")
+    out2 = agg(df2, [:county]; hints = h)
+    a = out2[out2.county .== "Alameda", :]
+    p = out2[out2.county .== "Placer", :]
+    @test a.district == ["A,B"]    # two distinct, no missing -- the hint must actually apply
+    @test p.district == ["B"]      # one missing (skipped) + one real value
 end
 
 @testset "allbut (the mirror of cols)" begin
@@ -111,6 +156,37 @@ end
     end
     @test err isa ErrorException && occursin("did you mean 'qty'?", err.msg)
     @test_throws ErrorException agg(df, :region; allbut = [:region])
+end
+
+@testset "distinct key combinations (cols = [] / allbut excluding everything)" begin
+    # Before the fix, an empty measure list made agg's `combine(gd) do sdf;
+    # DataFrame(); end` collapse to ZERO rows (DataFrames.jl counts rows from
+    # the per-group return shape; an empty return means "no rows for this
+    # group," not "one row, no extra columns"). cols = [] / allbut excluding
+    # every remaining column reads naturally as SELECT DISTINCT keys -- that's
+    # what should come back: one row per distinct key combination.
+    df = DataFrame(region = ["E", "E", "W", "W", "W"], sales = [1.0, 2.0, 3.0, 4.0, 5.0])
+
+    out = agg(df, [:region]; cols = [])
+    @test propertynames(out) == [:region]
+    @test sort(out.region) == ["E", "W"]
+
+    out2 = agg(df, [:region]; allbut = [:sales])
+    @test isequal(out, out2)
+
+    # a chain whose keys already cover every column in the frame -- the
+    # default `cols = nothing` path resolves to an empty measure list too,
+    # with no special kwarg needed to trigger it
+    out3 = agg(df, [:region, :sales])
+    @test propertynames(out3) == [:region, :sales]
+    @test isequal(sort(out3, [:region, :sales]), sort(unique(df), [:region, :sales]))
+
+    # a key column containing an actual missing value still gets its own
+    # distinct row (matches the skipmissing=false groupby used elsewhere in agg)
+    df2 = DataFrame(region = ["E", "E", missing, "W", "W"], sales = [1.0, 2.0, 3.0, 4.0, 5.0])
+    out4 = agg(df2, [:region]; cols = [])
+    @test nrow(out4) == 3
+    @test any(ismissing, out4.region)
 end
 
 @testset "named measures" begin

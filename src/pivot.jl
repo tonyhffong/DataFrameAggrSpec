@@ -92,9 +92,22 @@ function agg(
     end
     measures = normalize_measures(df, entries, keycols, hints)
     gd = groupby(df, keycols; sort = false, skipmissing = false)
-    combine(gd) do sdf
-        # invokelatest: lifted aggregators live at a newer world age than this closure
-        DataFrame([m.out => [aggrvalue(Base.invokelatest(m.func, sdf))] for m in measures]...)
+    if isempty(measures)
+        # nothing to reduce -- cols = [] / allbut excluding everything reads
+        # as "distinct key combinations" (SELECT DISTINCT keys). combine(gd)
+        # do sdf; DataFrame(); end (and even `do sdf; NamedTuple(); end`)
+        # both collapse to ZERO rows here -- DataFrames.jl's combine counts
+        # rows from the per-group return shape, and an empty return means
+        # "no rows for this group" no matter how it's spelled. combine(gd,
+        # nrow) is the one shape that's unambiguously one row per group.
+        tmpcol = gensym(:nrow)
+        out = combine(gd, nrow => tmpcol)
+        select!(out, Not(tmpcol))
+    else
+        combine(gd) do sdf
+            # invokelatest: lifted aggregators live at a newer world age than this closure
+            DataFrame([m.out => [aggrvalue(Base.invokelatest(m.func, sdf))] for m in measures]...)
+        end
     end
 end
 

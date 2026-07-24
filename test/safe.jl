@@ -70,6 +70,20 @@ end
     @test g1.fname == :discretize && g1.cols == [:EnrlTot]
     @test dim"mean(TestScr) |> groupby(District, County)".by == [:District, :County]
 
+    # groupby accepts COMPUTED keys too, exactly like the nested composite-
+    # aggregation groupby (compile_grouped) already did -- finding #3
+    gk = dim"cumsum(sales) |> groupby(yyyymm(date))"
+    @test length(gk.by) == 1
+    @test gk.by[1] isa DataFrameAggrSpec.GroupByKey
+    @test gk.by[1].cols == [:date]
+    # mixed bare-column + computed keys in one groupby
+    gmix = dim"cumsum(sales) |> groupby(region, yyyymm(date))"
+    @test gmix.by[1] == :region
+    @test gmix.by[2] isa DataFrameAggrSpec.GroupByKey && gmix.by[2].cols == [:date]
+    # the [ ... ] array spelling stays symbol-only -- mixing an expression in
+    # errors with a redirect rather than silently doing something surprising
+    @test_throws ErrorException dim"cumsum(sales) |> groupby([yyyymm(date)])"
+
     # both modifiers parse together (groupby -> pivot kind, orderby -> group
     # ordering; textual order is non-semantic, see design/compound-modifiers.md)
     gb = dim"discretize(x, [1]) |> groupby(g) |> orderby(d)"
@@ -99,7 +113,8 @@ end
                     "duplicate groupby")
     @test modreject(parsedim, "mean(x) |> groupby()", "at least one column")
     @test modreject(parsedim, "mean(x) |> groupby([])", "at least one column")
-    @test modreject(parsedim, "mean(x) |> groupby(3)", "column names")
+    @test modreject(parsedim, "mean(x) |> groupby(3)", "got literal")
+    @test modreject(parsedim, "mean(x) |> groupby([yyyymm(date)])", "array form")
     # top-level grouped reduction in an aggr spec: one value per key is not an
     # aggregate -- the error teaches the nested composite form
     @test modreject(parseaggr, "sum(_) |> groupby(g)", "NEST it in a reduction")
@@ -332,6 +347,8 @@ end
               "did you mean 'date'?")                    # orderby cols validated
     @test msg(() -> parsedim("mean(qty) |> groupby(regoin)"; columns = avail),
               "did you mean 'region'?")                  # groupby keys validated
+    @test msg(() -> parsedim("mean(qty) |> groupby(yyyymm(dat))"; columns = avail),
+              "did you mean 'date'?")   # a COMPUTED groupby key's real columns validate too
     @test checkcols(parseaggr("sum(qty)"), avail) === parseaggr("sum(qty)")
     @test msg(() -> checkcols(parseaggr("sum(zzzzz)"), avail), "Available columns")
 

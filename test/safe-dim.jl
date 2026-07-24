@@ -366,6 +366,21 @@ end
     # C2 [d4=40, d5=10] (median 25)
     @test hf.half == ["lo", "lo", "hi", "lo", "hi", "lo"]
 
+    # groupby accepts a COMPUTED key too (finding #3): the district column
+    # exists on the frame but isn't the grouping key at all here -- rows are
+    # bucketed by their yyyymm(date) group's EnrlTot total instead. Proves
+    # the gensym-materialization path works standalone and doesn't leak a
+    # synthetic column into the output.
+    dfd = DataFrame(
+        District = ["d1", "d1", "d2", "d3", "d4", "d5"],
+        date     = Date.(2024, [1, 1, 1, 2, 2, 3], 1),
+        EnrlTot  = [100, 100, 50, 30, 80, 20],
+    )
+    dfk = dim(dfd, [:size => dim"discretize(EnrlTot, [50, 150]) |> groupby(yyyymm(date))"])
+    @test string.(dfk.size) ==
+          ["3. 150+", "3. 150+", "3. 150+", "2. 50…149", "2. 50…149", "1. ≤49"]
+    @test propertynames(dfk) == [:District, :date, :EnrlTot, :size]   # no leaked gensym column
+
     # conflicts are errors, never precedence
     @test_throws ErrorException dim(df, [:x =>
         dimspec(dim"discretize(EnrlTot, [35]) |> groupby(District)"; by = :County)])

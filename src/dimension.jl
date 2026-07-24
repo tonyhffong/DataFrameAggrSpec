@@ -191,7 +191,9 @@ end
 struct PivotDim <: AbstractDimension
     name::Symbol
     spec::Union{Expr,SafeDimSpec}
-    by::Vector{Symbol}       # inner grouping keys (the groups being classified)
+    by::Vector{Union{Symbol,GroupByKey}}  # inner grouping keys (the groups
+                             # being classified) -- bare columns or, from a
+                             # safe-string `groupby(computed_expr)`, GroupByKeys
     context::Vector{Symbol}  # outer partition: classification runs per context group
     deps::Vector{Symbol}     # referenced non-key columns, aggregated per inner group
     order::Vector{Pair{Symbol,Bool}}  # GROUP-level ordering: sort the inner
@@ -298,9 +300,29 @@ function pivot_values(df::AbstractDataFrame, d::PivotDim, hints::AggrHints)
     )
     out = Vector{Any}(undef, nrow(df))
     anycat = false
+    haskeyexpr = any(k -> isa(k, GroupByKey), d.by)
     for ctxidxs in partition_indices(df, d.context)
         sub = view(df, ctxidxs, :)
-        gd = groupby(sub, d.by; sort = false, skipmissing = false)
+        if haskeyexpr
+            # at least one groupby key is a computed expression (e.g.
+            # yyyymm(date)) -- DataFrames.groupby needs real columns, so
+            # materialize each computed key as a gensym'd column on a copy
+            # of this context partition before grouping. Bare-column keys
+            # (the common case) keep the zero-copy SubDataFrame path below.
+            grpdf = DataFrame(sub; copycols = true)
+            bynames = Symbol[]
+            for k in d.by
+                if isa(k, Symbol)
+                    push!(bynames, k)
+                else
+                    grpdf[!, k.name] = k.f(Tuple(grpdf[!, c] for c in k.cols))
+                    push!(bynames, k.name)
+                end
+            end
+            gd = groupby(grpdf, bynames; sort = false, skipmissing = false)
+        else
+            gd = groupby(sub, Symbol[k for k in d.by]; sort = false, skipmissing = false)
+        end
         gidx = groupindices(gd)          # inner group index per sub row
         ng = length(gd)
         # one row per inner group: key columns take the group value,
@@ -387,7 +409,9 @@ end
 # every column a dimension reads from the frame: the planner-facing
 # dependencies plus its partition/grouping keys
 required_columns(d::WindowDim) = union(dependencies(d), d.by)
-required_columns(d::PivotDim) = union(d.deps, d.by, d.context)
+# a GroupByKey's real columns (byrefs, safe.jl) are what must exist on the
+# frame -- never its synthetic gensym'd name
+required_columns(d::PivotDim) = union(d.deps, byrefs(d.by), d.context)
 
 # applydims!: internal apply loop over resolved dimensions. Missing inputs are
 # caught up front with a did-you-mean hint (the TUI path: a misspelled column

@@ -54,10 +54,20 @@ AggrHints(d::AbstractDict; default::Function = defaultAggr) =
 
 function resolveaggr(h::AggrHints, col::Symbol, T::Type)
     haskey(h.bycol, col) && return h.bycol[col]
+    # strip Missing before matching bytype/default -- a column that has ever
+    # held a missing has eltype Union{Missing,S}, which is never <: Real /
+    # <: AbstractString / etc, so without this every nullable column would
+    # silently miss its bytype hint (and the Real => :sum default) and fall
+    # to the generic :uniqvalue catch-all. Guarded to T === Missing exactly
+    # (an all-missing column): nonmissingtype(Missing) is Union{}, which is
+    # <: everything, so normalizing it would make an all-missing column
+    # spuriously match the FIRST registered bytype entry regardless of
+    # relevance -- leave that case to fall through to default(Missing) as before.
+    T2 = T === Missing ? T : Base.nonmissingtype(T)
     for (K, v) in h.bytype
-        T <: K && return v
+        T2 <: K && return v
     end
-    h.default(T)
+    h.default(T2)
 end
 
 # Normalize the lifted-aggregator return contract (scalar or 1x1 DataFrame) to a value.

@@ -222,6 +222,112 @@ items were fixed in the same commit that shipped `dim"where()"`:
   which README / CLAUDE.md explicitly say is *not* supported ("no
   `∘`-on-frame sugar") — only `df |> dim(chain)` and `(t2 ∘ t1)(df)` remain.
 
+## #7 `AggrHints` silently mis-resolved every `Union{Missing,T}` column; `agg` silently returned zero rows for an empty measure list
+
+**Status: FIXED in 0.9.1.** Found in a follow-up review focused on
+expressiveness of the aggregation path itself, not the grammar. Both bugs
+were verified empirically before and after the fix; neither needed a
+grammar change.
+
+**Bug A — `resolveaggr` (src/aggrspec.jl).** The `bytype` scan and the
+`default` fallback matched via `T <: K` on the column's *raw* `eltype`. Any
+column that has ever held a `missing` — which is to say, essentially any
+real-world nullable column — has eltype `Union{Missing,S}`, and
+`Union{Missing,Float64} <: Real` is `false`. So the built-in default
+(`Real => :sum`) and any **explicit** `bytype` hint (`AggrHints(Real =>
+aggr"sum")`, `AggrHints(AbstractString => aggr"uniqvalue")` — the exact
+patterns this README teaches) silently missed every nullable column and
+fell through to the generic `:uniqvalue` catch-all, with no error. Since
+real groups almost always have more than one distinct value, this usually
+surfaced as every group's aggregate silently coming back `missing` —
+including groups whose own rows contained no `missing` at all. It also
+explained an apparent `topnames` regression on an all-`Union{Missing,T}`
+measure column (`UndefVarError: T not defined in static parameter
+matching`): `PivotDim`'s dependency aggregation resolves through the same
+`resolveaggr`, so a nullable measure collapsed to an all-`missing` group
+vector, which `topnames`'s `where T<:Real` signature can't bind against —
+`topnames` and categorical columns (see #3 above) were never the actual
+cause. `test/hints.jl`'s resolution testset only ever exercised bare types
+(`Float64`, `String`, `Int`, `Any`), never `Union{Missing,T}`, so this had
+zero test coverage despite being the single most common real-world column
+shape.
+
+Fix: strip `Missing` via `Base.nonmissingtype(T)` before both the `bytype`
+scan and the `default` call — guarded to skip normalization when `T` is
+*exactly* `Missing` (an all-missing column), because
+`Base.nonmissingtype(Missing) === Union{}`, and `Union{} <: K` is `true` for
+every `K` — normalizing that case would make an all-missing column
+spuriously match whichever `bytype` entry happens to be registered first,
+regardless of relevance. The guard preserves prior (already-sensible)
+behavior for all-missing columns: fall through to `default(Missing)`, the
+generic `:uniqvalue` catch-all.
+
+**Bug B — `agg`'s empty-measures path (src/pivot.jl).** Whenever the
+resolved measure list is empty — `cols = []`, an `allbut` excluding every
+remaining column, or simply a chain whose keys already cover every column
+in the frame — `combine(gd) do sdf; DataFrame([...for m in measures]...);
+end` degraded to `combine(gd) do sdf; DataFrame(); end`. DataFrames.jl's
+`combine` counts output rows from the per-group return's row count, and an
+empty `DataFrame()` return means "zero rows for this group" — so the whole
+result silently collapsed to zero rows instead of the natural "distinct key
+combinations" reading (`SELECT DISTINCT keys`) that `cols`/`allbut`'s
+"selection mode" framing implies. A `NamedTuple()` per-group return was
+tried as a fix candidate and *also* collapses to zero rows — the fix can't
+rely on an empty return shape counting as one row; it must force the row
+count explicitly via `combine(gd, nrow => tmpcol)` (dropping `tmpcol`
+after), which reuses the same `gd` `agg` already builds and reliably yields
+exactly one row per group, missing keys included.
+
+Chosen behavior: implement the `SELECT DISTINCT` reading rather than
+raising an error, since it's a well-defined operation that completes the
+existing `cols`/`allbut` design instead of leaving it as a footgun — see
+the README's Aggregation section for the documented idiom.
+
+## #8 `groupby(...)` modifier now accepts computed keys, matching the nested composite form
+
+**Status: FIXED in 0.9.2.** The pivot modifier `spec |> groupby(cols...)`
+previously only accepted bare column names / a `[col, ...]` array
+(`simple_posarg` in `peel_modifiers`, src/safe.jl), while the *nested*
+composite-aggregation `groupby` inside `compile_grouped` (also src/safe.jl)
+already compiled arbitrary elementwise expressions as keys —
+`aggr"mean(sum(_) |> groupby(yyyy(t)))"` worked, but
+`dim"cumsum(sales) |> groupby(yyyymm(date))"` errored ("groupby expects
+column names"). Two features sharing a name and a conceptual role
+("aggregate/group at this granularity first") shouldn't have different
+grammars. Chosen fix: the expressiveness route — extend the modifier, not
+restrict the nested form (which would regress a documented, tested
+capability).
+
+**Why it wasn't a one-line change.** `PivotDim`'s inner grouping calls
+`DataFrames.groupby(sub, d.by)` directly, which requires `d.by` to name real
+columns already on the frame. The nested form never touches
+`DataFrames.groupby` — it hand-rolls grouping via a `Dict` keyed by evaluated
+tuples, which is why it could accept arbitrary expressions for free.
+Reimplementing `PivotDim`'s grouping the same way would mean giving up
+`GroupedDataFrame`/`groupindices`/the existing `AggrHints` dependency-
+aggregation step it already leans on — too much churn for a modest feature.
+
+**The fix.** A `GroupByKey` carrier (src/safe.jl: `name` — a `gensym`'d
+synthetic column, `f` — the compiled thunk via the same `compile_node` path
+`compile_grouped` uses, `cols` — the real columns it reads) widens
+`SafeDimSpec.by`/`PivotDim.by` from `Vector{Symbol}` to
+`Vector{Union{Symbol,GroupByKey}}`. At evaluation time (`pivot_values`,
+src/dimension.jl), a context partition with at least one computed key gets
+its `GroupByKey`s materialized as real gensym'd columns on a `copy` of that
+partition before `DataFrames.groupby` runs, exactly the same grouping call as
+before — bare-column-only `by` lists (the common case) keep today's
+zero-copy `SubDataFrame` path untouched, so nothing about the existing,
+overwhelmingly common usage pays for this. `required_columns`/`checkcols`
+validate a computed key's real columns (with did-you-mean repair), never its
+synthetic name.
+
+**Deliberately out of scope:** `orderby` (wasn't part of the finding — an
+"order by a post-aggregation expression" ask has no existing demand); the
+Julia-side `by=`/`dimspec(...; by=...)` kwarg (stays `Symbol`-only — trusted
+callers can already precompute a column); the `[col, ...]` array spelling of
+`groupby` (stays plain-column-only — mixing a computed expression into it is
+a clear, redirecting error rather than a new ambiguity to resolve).
+
 ## Plan for #3 (agreed fix)
 
 1. **Loosen and normalize `topnames`** (src/verbs.jl):

@@ -135,6 +135,12 @@ Modifier textual order carries no meaning (`groupby |> orderby` ≡
 `orderby |> groupby` — they are options, like keyword arguments). The available operations are
 listed in [docs/safe-dimension-operators.md](docs/safe-dimension-operators.md).
 
+`groupby`'s keys may be **computed**, not just bare columns —
+`dim"cumsum(sales) |> groupby(yyyymm(date))"` buckets by calendar month
+instead of an existing column, mixable with plain columns
+(`groupby(region, yyyymm(date))`); the `[col, ...]` array spelling stays
+plain-column-only.
+
 **Why two spellings for the same separator?** `spec ∘ orderby(date)` and
 `spec |> orderby(date)` mean exactly the same thing, and the redundancy is
 deliberate. `∘` is the more truthful glyph: a modifier is not a pipeline stage
@@ -258,6 +264,14 @@ reduction for every non-key column *except* the listed ones (the two are
 mutually exclusive — both are selection modes). It is the quickest way to
 shed a helper column, e.g. `agg(df, chain; hints, allbut = [:gap])` after a
 sessionization chain built from `gap`.
+
+Selecting no measures at all — `cols = []`, or an `allbut` that excludes
+every remaining column — reduces `agg` to the distinct key combinations
+(`SELECT DISTINCT` in SQL terms), one row per group:
+
+```julia
+agg(df, [:region]; cols = [])   # every distinct region, no measure columns
+```
 
 ### Composite aggregation
 
