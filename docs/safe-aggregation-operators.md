@@ -50,10 +50,10 @@ Whole-vector functions that produce the aggregate value.
 | `last` | last value in the group | `aggr"last(_)"` |
 | `skipmissing` | drop missings before reducing | `aggr"sum(skipmissing(_))"` |
 | `uniqvalue` | the single unique non-missing value, else `missing`; kwargs `skipna`, `skipempty` | `aggr"uniqvalue(_)"` |
-| `countuniq` | count-distinct: the number of unique non-missing values; kwargs `skipna` (default `true`; `false` counts `missing` as a value), `skipempty` (drop empty strings) | `aggr"countuniq(_)"` |
+| `countuniq` | count-distinct: the number of unique non-missing values.<br><br>Kwargs: `skipna` (default `true`; `false` counts `missing` as a value), `skipempty` (drop empty strings) | `aggr"countuniq(_)"` |
 | `unionall` | flattened union of a vector-of-vectors column | `aggr"unionall(_)"` |
-| `strjoinuniq` | unique non-missing values as strings, sorted and joined; `strjoinuniq(_, sep, limit)` with `sep = ","` and `limit = 128` characters (a trailing `…` marks truncation) | `aggr"strjoinuniq(_, \"; \", 64)"` |
-| `wmeanfallback` | weighted mean with a CASCADE of candidate weight columns: `wmeanfallback(_, [w1, w2, ...])` tries `w1` first, falls to `w2` if `sum(w1)` is zero or `missing`, and so on; a bare number in the list (e.g. `1`) is a constant weight, so it cancels out to an unweighted mean — a natural last resort. `missing` if every candidate fails | `aggr"wmeanfallback(_, [Size, Suitability, 1])"` |
+| `strjoinuniq` | unique non-missing values as strings, sorted and joined.<br><br>`strjoinuniq(_, sep, limit)` with `sep = ","` and `limit = 128` characters (a trailing `…` marks truncation) | `aggr"strjoinuniq(_, \"; \", 64)"` |
+| `wmeanfallback` | weighted mean with a CASCADE of candidate weight columns.<br><br>`wmeanfallback(_, [w1, w2, ...])` tries `w1` first, falls to `w2` if `sum(w1)` is zero or `missing`, and so on.<br><br>A bare number in the list (e.g. `1`) is a constant weight, so it cancels out to an unweighted mean — a natural last resort. `missing` if every candidate fails | `aggr"wmeanfallback(_, [Size, Suitability, 1])"` |
 
 Reductions apply plain Julia semantics: a column containing `missing` makes
 `sum`/`mean`/… return `missing`. Three missing-value tools, by role:
