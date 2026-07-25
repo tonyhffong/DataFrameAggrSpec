@@ -4,31 +4,48 @@ using Dates
 using Statistics
 using Test
 
-# Per-operator tests for SAFE AGGREGATION operators, mirroring
-# docs/safe-aggregation-operators.md. When a new aggregation operator is added
-# to the SafeOps registry, its tests belong here; the DSL machinery itself
-# (grammar, rejections, integration, caching) is covered in test/safe.jl.
+# Per-operator tests for SAFE AGGREGATION operators, mirroring the table in
+# docs/safe-aggregation-operators.md -- ONE @testset per operator, named for
+# the operator exactly as the registry spells it, so `@testset "<op>"` is
+# greppable. The "every shipped operator has a test" testset in
+# test/safe-grammar.jl enforces that; a new operator without one fails there.
+# Elsewhere: grammar/rejections/errors -> test/safe-grammar.jl,
+# orderby/groupby -> test/safe-modifiers.jl, wiring -> test/safe-integration.jl.
 
-@testset "reduction operators" begin
+@testset "reductions" begin
+    # table-driven so each operator still gets a @testset NAMED for it (the
+    # first column) -- greppable, and visible individually in test output
     v = [4.0, 1.0, 3.0, 2.0]
-    @test aggr"sum".f(v) == 10.0
-    @test aggr"prod(_)".f([2, 3]) == 6
-    @test aggr"mean(_)".f(v) == 2.5
-    @test aggr"median(_)".f(v) == 2.5
-    @test aggr"std(_)".f(v) == Statistics.std(v)
-    @test aggr"var(_)".f(v) == Statistics.var(v)
-    @test aggr"quantile(_, 0.75)".f(v) == Statistics.quantile(v, 0.75)
-    @test aggr"minimum(_)".f(v) == 1.0
-    @test aggr"maximum(_)".f(v) == 4.0
-    @test aggr"extrema(_)".f(v) == (1.0, 4.0)
-    @test aggr"length(_)".f(v) == 4
-    @test aggr"nrow".f(v) == 4
-    @test aggr"count(_ > 2)".f(v) == 2
-    @test aggr"first(_)".f(v) == 4.0
-    @test aggr"last(_)".f(v) == 2.0
-    @test aggr"sum(skipmissing(_))".f([1, missing, 2]) == 3
+    for (op, spec, input, expected) in Any[
+        ("sum",         "sum",                 v,                10.0),
+        ("prod",        "prod(_)",             [2, 3],           6),
+        ("mean",        "mean(_)",             v,                2.5),
+        ("median",      "median(_)",           v,                2.5),
+        ("std",         "std(_)",              v,                Statistics.std(v)),
+        ("var",         "var(_)",              v,                Statistics.var(v)),
+        ("quantile",    "quantile(_, 0.75)",   v,                Statistics.quantile(v, 0.75)),
+        ("minimum",     "minimum(_)",          v,                1.0),
+        ("maximum",     "maximum(_)",          v,                4.0),
+        ("extrema",     "extrema(_)",          v,                (1.0, 4.0)),
+        ("length",      "length(_)",           v,                4),
+        ("nrow",        "nrow",                v,                4),
+        ("count",       "count(_ > 2)",        v,                2),
+        ("first",       "first(_)",            v,                4.0),
+        ("last",        "last(_)",             v,                2.0),
+        ("skipmissing", "sum(skipmissing(_))", [1, missing, 2],  3),
+    ]
+        @testset "$op" begin
+            @test isequal(parseaggr(spec).f(input), expected)
+        end
+    end
+end
+
+@testset "uniqvalue" begin
     @test aggr"uniqvalue(_)".f(["a", "a"]) == "a"
-    @test ismissing(aggr"uniqvalue(_)".f(["a", "b"]))
+    @test ismissing(aggr"uniqvalue(_)".f(["a", "b"]))   # not unique -> missing
+end
+
+@testset "unionall" begin
     @test sort(aggr"unionall(_)".f([[1, 2], [2, 3]])) == [1, 2, 3]
 end
 
@@ -42,14 +59,17 @@ end
     @test aggr"std(_) / mean(_)".f(x) == Statistics.std(x) / 2.0      # coeff. of variation
 end
 
-@testset "ismissing / coalesce (aggregation side)" begin
+@testset "coalesce" begin
     # replace: elementwise coalesce before reducing (vs skipmissing = drop)
     @test aggr"sum(coalesce(_, 0))".f([1.0, missing, 2.0]) == 3.0
-    # flag: missing-count as a measure
-    @test aggr"count(ismissing(_))".f([1, missing, missing]) == 2
     # scalar broadcast: patch the missing that uniqvalue returns on mixed groups
     @test aggr"coalesce(uniqvalue(_), \"mixed\")".f(["a", "b"]) == "mixed"
     @test aggr"coalesce(uniqvalue(_), \"mixed\")".f(["a", "a"]) == "a"
+end
+
+@testset "ismissing" begin
+    # flag: missing-count as a measure
+    @test aggr"count(ismissing(_))".f([1, missing, missing]) == 2
 end
 
 @testset "countuniq" begin

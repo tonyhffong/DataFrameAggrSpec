@@ -7,10 +7,13 @@ using Test
 
 import DataFrameAggrSpec: WindowDim, PivotDim, dependencies   # internals, white-box tests
 
-# Per-operator tests for SAFE DIMENSION operators, mirroring
-# docs/safe-dimension-operators.md. When a new dimension operator is added to
-# the SafeOps registry, its tests belong here; the DSL machinery itself
-# (grammar, rejections, integration, caching) is covered in test/safe.jl.
+# Per-operator tests for SAFE DIMENSION operators, mirroring the table in
+# docs/safe-dimension-operators.md -- ONE @testset per operator, named for the
+# operator exactly as the registry spells it, so `@testset "<op>"` is
+# greppable. The "every shipped operator has a test" testset in
+# test/safe-grammar.jl enforces that; a new operator without one fails there.
+# Elsewhere: grammar/rejections/errors -> test/safe-grammar.jl,
+# orderby/groupby -> test/safe-modifiers.jl, wiring -> test/safe-integration.jl.
 
 sddf() = DataFrame(
     County = ["C1", "C1", "C1", "C1", "C2", "C2"],
@@ -19,17 +22,83 @@ sddf() = DataFrame(
     EnrlTot = [100, 100, 50, 30, 80, 20],
 )
 
-@testset "group-relative and elementwise operators" begin
+@testset "group-relative measures" begin
+    # a reduction returns a scalar per partition; arithmetic broadcasts it back
+    # across the rows. Not operator-specific -- this is the broadcast contract.
     @test dim"sales / sum(sales)".f([1.0, 3.0]) == [0.25, 0.75]   # share of group
     @test dim"sum(sales)".f([1.0, 3.0]) == 4.0                    # broadcast group total
-    @test dim"cumsum(sales)".f([1, 2, 3]) == [1, 3, 6]
-    @test dim"cumprod(g)".f([2, 3]) == [2, 6]
-    @test isequal(dim"lag(x)".f([1, 2, 3]), [missing, 1, 2])
-    @test isequal(dim"lead(x, 2)".f([1, 2, 3]), [3, missing, missing])
+    @test dim"sales > mean(sales)".f([1.0, 3.0]) == [false, true] # above-average flag
+    @test dim"countuniq(District)".f(["a", "b", "a"]) == 2        # distinct count broadcast
     @test dim"round(sales / sum(sales), digits = 2)".f([1.0, 2.0]) == [0.33, 0.67]
-    @test dim"sales > mean(sales)".f([1.0, 3.0]) == [false, true]  # above-average flag
-    @test dim"max(sales, 0)".f([-1.0, 2.0]) == [0.0, 2.0]          # elementwise clamp
-    @test dim"countuniq(District)".f(["a", "b", "a"]) == 2         # distinct count broadcast
+end
+
+@testset "cumsum" begin
+    @test dim"cumsum(sales)".f([1, 2, 3]) == [1, 3, 6]
+end
+
+@testset "cumprod" begin
+    @test dim"cumprod(g)".f([2, 3]) == [2, 6]
+end
+
+@testset "lag" begin
+    @test isequal(dim"lag(x)".f([1, 2, 3]), [missing, 1, 2])
+    @test isequal(dim"lag(x, 2)".f([1, 2, 3]), [missing, missing, 1])
+end
+
+@testset "lead" begin
+    @test isequal(dim"lead(x)".f([1, 2, 3]), [2, 3, missing])
+    @test isequal(dim"lead(x, 2)".f([1, 2, 3]), [3, missing, missing])
+end
+
+@testset "elementwise math" begin
+    # table-driven so each operator still gets a @testset NAMED for it
+    for (op, spec, input, expected) in Any[
+        ("abs",   "abs(x)",               [-1.0, 2.0],  [1.0, 2.0]),
+        ("log",   "log(x)",               [1.0, ℯ],     [0.0, 1.0]),
+        ("log2",  "log2(x)",              [1.0, 8.0],   [0.0, 3.0]),
+        ("log10", "log10(x)",             [1.0, 100.0], [0.0, 2.0]),
+        ("exp",   "exp(x)",               [0.0, 1.0],   [1.0, ℯ]),
+        ("sqrt",  "sqrt(x)",              [4.0, 9.0],   [2.0, 3.0]),
+        ("round", "round(x, digits = 1)", [1.24, 1.26], [1.2, 1.3]),
+        ("floor", "floor(x)",             [1.7, -1.2],  [1.0, -2.0]),
+        ("ceil",  "ceil(x)",              [1.2, -1.7],  [2.0, -1.0]),
+        ("min",   "min(x, 2)",            [1.0, 5.0],   [1.0, 2.0]),
+        ("max",   "max(x, 2)",            [1.0, 5.0],   [2.0, 5.0]),
+    ]
+        @testset "$op" begin
+            @test parsedim(spec).f(input) ≈ expected
+        end
+    end
+end
+
+@testset "arithmetic and comparison operators" begin
+    # broadcast semantics, no dots needed; dotted spellings are aliases.
+    # Comparison results are Bool columns -- legal pivot keys on their own.
+    a = [1.0, 2.0, 3.0]
+    b = [3.0, 2.0, 1.0]
+    for (op, spec, expected) in Any[
+        ("+",  "a + b",  [4.0, 4.0, 4.0]),
+        ("-",  "a - b",  [-2.0, 0.0, 2.0]),
+        ("*",  "a * b",  [3.0, 4.0, 3.0]),
+        ("/",  "a / b",  [1/3, 1.0, 3.0]),
+        ("^",  "a ^ b",  [1.0, 4.0, 3.0]),
+        ("==", "a == b", [false, true, false]),
+        ("!=", "a != b", [true, false, true]),
+        ("<",  "a < b",  [true, false, false]),
+        ("<=", "a <= b", [true, true, false]),
+        (">",  "a > b",  [false, false, true]),
+        (">=", "a >= b", [false, true, true]),
+        ("≠",  "a ≠ b",  [true, false, true]),
+        ("≤",  "a ≤ b",  [true, true, false]),
+        ("≥",  "a ≥ b",  [false, true, true]),
+    ]
+        @testset "$op" begin
+            @test parsedim(spec).f(a, b) ≈ expected
+        end
+    end
+    # dotted spellings bind to the same broadcasting closure
+    @test dim"a .+ b".f(a, b) == dim"a + b".f(a, b)
+    @test dim"a .< b".f(a, b) == dim"a < b".f(a, b)
 end
 
 @testset "discretize" begin
@@ -132,19 +201,24 @@ end
     @test isequal(dim"a > 1 && b > 1".f([2, 2], [missing, 0]), [missing, false])
     @test isequal(dim"a > 1 || b > 1".f([0, 0], [missing, 2]), [missing, true])
 
-    # ! negates elementwise, on comparisons and on Bool columns
-    @test dim"!(a > 1)".f([0, 2]) == [true, false]
-    @test dim"!flag".f([true, false]) == [false, true]
+    @testset "!" begin   # negates elementwise, on comparisons and Bool columns
+        @test dim"!(a > 1)".f([0, 2]) == [true, false]
+        @test dim"!flag".f([true, false]) == [false, true]
+    end
 end
 
 @testset "date bucketing verbs" begin
     d = Date(2025, 7, 9)
-    @test yyyy(d) == "2025"
-    @test yyyyq(d) == "2025Q3"
-    @test yyq(d) == "25Q3"
-    @test yyyymm(d) == "202507"
+    for (op, got, expected) in Any[
+        ("yyyy",   yyyy(d),   "2025"),
+        ("yyyyq",  yyyyq(d),  "2025Q3"),
+        ("yyq",    yyq(d),    "25Q3"),
+        ("yyyymm", yyyymm(d), "202507"),
+        ("yymm",   yymm(d),   "2507"),
+    ]
+        @testset "$op" begin @test got == expected end
+    end
     @test yyyymm(d, "/") == "2025/07"
-    @test yymm(d) == "2507"
     @test yymm(d, "-") == "25-07"
     @test yyyymm(DateTime(2026, 1, 2, 13, 30)) == "202601"   # DateTime too
     @test ismissing(yyyy(missing))
@@ -241,173 +315,3 @@ end
     @test_throws ErrorException dim"where(x > 1, true_label = \"a\", false_label = \"a\")".f([2])
 end
 
-@testset "orderby modifier (behavior)" begin
-    df = DataFrame(region = ["E", "E", "W", "W", "W"],
-                   date   = [1, 2, 1, 2, 3],
-                   sales  = [10.0, 20.0, 5.0, 15.0, 30.0])
-
-    # in-string orderby ≡ dimspec(...; order = ...)
-    a = dim(df, [:region, :cum => dim"cumsum(sales) |> orderby(date)"])
-    b = dim(df, [:region, :cum => dimspec(dim"cumsum(sales)"; order = :date)])
-    @test a.cum == b.cum == [10.0, 30.0, 5.0, 20.0, 50.0]
-
-    # ∘ spelling + descending direction
-    c = dim(df, [:region, :cum2 => dim"cumsum(sales) ∘ orderby(date => :desc)"])
-    @test c.cum2 == [30.0, 20.0, 50.0, 45.0, 30.0]
-
-    # THE motivating case: ordering expressible from a pure-string config chain
-    d = dim(df, ["region", ["cum", "cumsum(sales) |> orderby(date)"]])
-    @test d.cum == a.cum
-
-    # conflict between in-string orderby and dimspec order is an error
-    @test_throws ErrorException dim(df, [:region,
-        :x => dimspec(dim"cumsum(sales) |> orderby(date)"; order = :sales)])
-
-    # orderby on a pivot dim is legal since 0.8.4: it means GROUP ordering
-    # (a no-op for order-insensitive verbs like topnames, same as a pointless
-    # orderby on a window sum)
-    (_, pdims) = DataFrameAggrSpec.normalize_chain(
-        [:t => dim"topnames(region, sales, 2) |> orderby(date)"])
-    @test pdims[1] isa PivotDim
-    @test pdims[1].order == [:date => false]
-
-    # the orderby columns count as dependencies
-    (_, dims) = DataFrameAggrSpec.normalize_chain(
-        [:region, :cum => dim"cumsum(sales) |> orderby(date)"])
-    @test dependencies(dims[1]) == [:sales, :date]
-end
-
-@testset "orderby on pivot dims (group ordering)" begin
-    # encounter order is W-first on purpose: sorting must be real, not luck
-    df = DataFrame(region = ["W", "W", "W", "E", "E"],
-                   date   = [1, 2, 3, 1, 2],
-                   sales  = [5.0, 15.0, 30.0, 10.0, 20.0])
-    # region sales sums: W = 50, E = 30
-
-    # THE Pareto idiom: running total over groups, largest group first
-    p = dim(df, [:cum => dim"cumsum(sales) |> groupby(region) |> orderby(sales => :desc)"])
-    @test p.cum == [50.0, 50.0, 50.0, 80.0, 80.0]
-
-    # ascending (smallest group first)
-    a = dim(df, [:cum => dim"cumsum(sales) |> groupby(region) |> orderby(sales)"])
-    @test a.cum == [80.0, 80.0, 80.0, 30.0, 30.0]
-
-    # ordering by the group KEY (E before W, though W is encountered first)
-    k = dim(df, [:cum => dim"cumsum(sales) |> groupby(region) |> orderby(region)"])
-    @test k.cum == [80.0, 80.0, 80.0, 30.0, 30.0]
-
-    # modifier textual order is NON-semantic (design/compound-modifiers.md)
-    q = dim(df, [:cum => dim"cumsum(sales) |> orderby(sales => :desc) |> groupby(region)"])
-    @test q.cum == p.cum
-
-    # dimspec is the Julia-side equivalent, for safe and trusted specs alike
-    j = dim(df, [:cum => dimspec(dim"cumsum(sales)";
-                                 by = :region, kind = :pivot, order = :sales => :desc)])
-    @test j.cum == p.cum
-    t = dim(df, [:cum => dimspec(:( cumsum(:sales) );
-                                 by = :region, kind = :pivot, order = :sales => :desc)])
-    @test t.cum == p.cum
-
-    # order column the spec never references: aggregated per hints, and a dependency
-    df2 = DataFrame(region = ["W", "W", "E"], sales = [1.0, 1.0, 5.0],
-                    profit = [1.0, 1.0, 9.0])
-    # sums: sales W=2, E=5 ; profit W=2, E=9 -> desc by profit puts E first
-    h = dim(df2, [:cum => dim"cumsum(sales) |> groupby(region) |> orderby(profit => :desc)"])
-    @test h.cum == [7.0, 7.0, 5.0]
-    (_, hd) = DataFrameAggrSpec.normalize_chain(
-        [:x => dim"cumsum(sales) |> groupby(region) |> orderby(profit)"])
-    @test dependencies(hd[1]) == [:sales, :profit]
-
-    # context partitioning: per County, districts sorted by their sums desc
-    # C1 sums: d2=50, then the d1=30/d3=30 tie stays stable (d1 first)
-    #   -> cum: d2=50, d1=80, d3=110 ; C2: d4=40 -> 40, d5 -> 50
-    dfx = sddf()
-    c = dim(dfx, [:County,
-                  :cum => dim"cumsum(TestScr) |> groupby(District) |> orderby(TestScr => :desc)"])
-    @test c.cum == [80.0, 80.0, 50.0, 110.0, 40.0, 50.0]
-
-    # conflicts are still errors: order in-string AND via dimspec
-    @test_throws ErrorException DataFrameAggrSpec.normalize_chain([:bad =>
-        dimspec(dim"cumsum(sales) |> groupby(region) |> orderby(date)"; order = :sales)])
-end
-
-@testset "groupby modifier (behavior)" begin
-    df = sddf()
-
-    # no groupby = per-row window bucketing
-    df0 = DataFrame(x = [1.0, 2.0, 3.0, 4.0])
-    out = dim(df0, :q => dim"quantiles(x, [.25,.5,.75])")
-    @test string.(out.q) ==
-          ["1. [0%, 25%)", "2. [25%, 50%)", "3. [50%, 75%)", "4. [75%, 100%]"]
-
-    # window kind partitions by the chain's left context
-    keycols, dims = DataFrameAggrSpec.normalize_chain(
-        [:County, :rq => dim"quantiles(TestScr, [.5])"])
-    @test dims[1] isa WindowDim
-    @test dims[1].by == [:County]
-    out3 = dim(df, [:County, :rq => dim"quantiles(TestScr, [.5])"])
-    @test string.(out3.rq) == ["1. [0%, 50%)", "1. [0%, 50%)", "2. [50%, 100%]",
-                               "2. [50%, 100%]", "2. [50%, 100%]", "1. [0%, 50%)"]
-
-    # discretize goes pivot via the modifier -- no dimspec needed
-    # (district EnrlTot sums: d1=200, d2=50, d3=30, d4=80, d5=20)
-    df4 = dim(df, [:size => dim"discretize(EnrlTot, [35, 60]) |> groupby(District)"])
-    @test string.(df4.size) == ["3. 60+", "3. 60+", "2. 35…59", "1. ≤34", "3. 60+", "1. ≤34"]
-
-    # array form of the keys, and the ∘ spelling
-    df5 = dim(df, [:size2 => dim"discretize(EnrlTot, [35, 60]) ∘ groupby([District])"])
-    @test string.(df5.size2) == string.(df4.size)
-
-    # an UNREGISTERED host verb classifies via groupby -- zero registration
-    registerop!(:hilo,
-        (measure,) -> [m > Statistics.median(measure) ? "hi" : "lo" for m in measure])
-    hf = dim(df, [:County, :half => dim"hilo(TestScr) |> groupby(District)"])
-    # per County, district sums: C1 [d1=30, d2=50, d3=30] (median 30),
-    # C2 [d4=40, d5=10] (median 25)
-    @test hf.half == ["lo", "lo", "hi", "lo", "hi", "lo"]
-
-    # groupby accepts a COMPUTED key too (finding #3): the district column
-    # exists on the frame but isn't the grouping key at all here -- rows are
-    # bucketed by their yyyymm(date) group's EnrlTot total instead. Proves
-    # the gensym-materialization path works standalone and doesn't leak a
-    # synthetic column into the output.
-    dfd = DataFrame(
-        District = ["d1", "d1", "d2", "d3", "d4", "d5"],
-        date     = Date.(2024, [1, 1, 1, 2, 2, 3], 1),
-        EnrlTot  = [100, 100, 50, 30, 80, 20],
-    )
-    dfk = dim(dfd, [:size => dim"discretize(EnrlTot, [50, 150]) |> groupby(yyyymm(date))"])
-    @test string.(dfk.size) ==
-          ["3. 150+", "3. 150+", "3. 150+", "2. 50…149", "2. 50…149", "1. ≤49"]
-    @test propertynames(dfk) == [:District, :date, :EnrlTot, :size]   # no leaked gensym column
-
-    # conflicts are errors, never precedence
-    @test_throws ErrorException dim(df, [:x =>
-        dimspec(dim"discretize(EnrlTot, [35]) |> groupby(District)"; by = :County)])
-    @test_throws ErrorException DataFrameAggrSpec.normalize_chain(
-        [:bad => dim"topnames(District, TestScr, 5) |> groupby(County)"])
-    gob = DataFrameAggrSpec.normalize_chain(
-        [:ok => dim"discretize(EnrlTot, [35]) |> groupby(District) |> orderby(TestScr)"])[2][1]
-    @test gob.by == [:District] && gob.order == [:TestScr => false]   # both modifiers
-    @test_throws ErrorException dim(df, [:bad =>
-        dimspec(dim"discretize(EnrlTot, [35]) |> groupby(District)"; kind = :window)])
-end
-
-@testset "nested grouped reduction (dim side)" begin
-    # a |> groupby NESTED inside a dim spec is COMPUTATIONAL grouping -- a
-    # grouped-reduction vector feeding the outer expression -- not the
-    # top-level pivot modifier: the spec stays window kind and its scalar
-    # result broadcasts to the partition
-    df = DataFrame(
-        county = ["c1", "c1", "c1", "c2", "c2"],
-        year   = [2020, 2020, 2021, 2020, 2021],
-        pop    = [10.0, 20.0, 40.0, 5.0, 15.0],
-    )
-    keycols, dims = DataFrameAggrSpec.normalize_chain(
-        [:county, :avgyr => dim"mean(sum(pop) |> groupby(year))"])
-    @test dims[1] isa WindowDim                    # nested groupby ≠ pivot kind
-    @test :year in dependencies(dims[1])           # nested key is a dependency
-    out = dim(df, [:county, :avgyr => dim"mean(sum(pop) |> groupby(year))"])
-    # c1: yearly sums 30, 40 -> 35;  c2: 5, 15 -> 10
-    @test out.avgyr == [35.0, 35.0, 35.0, 10.0, 10.0]
-end
