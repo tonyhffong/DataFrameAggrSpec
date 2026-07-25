@@ -90,6 +90,10 @@ smdf() = DataFrame(
           [:region => false, :date => false]
     @test modreject(parseaggr, "first(_) |> orderby(date) |> orderby(x)",
                     "duplicate orderby")
+    # `_` names the aggregation target, bound only when the spec is applied
+    # -- it has no meaning as a fixed row-order key
+    @test modreject(parseaggr, "last(sum(_) |> groupby(year)) |> orderby(_)",
+                    "no meaning in orderby")
     @test modreject(parsedim, "mean(x) |> groupby(a) |> groupby(b)",
                     "duplicate groupby")
     @test modreject(parsedim, "mean(x) |> groupby()", "at least one column")
@@ -197,6 +201,23 @@ end
     # columns referenced only via orderby are validated too (checkcols)
     @test checkcols(aggr"first(_) |> orderby(date)", [:sales, :date]) isa SafeAggrSpec
     @test_throws ErrorException checkcols(aggr"first(_) |> orderby(dat)", [:sales, :date])
+
+    # composing top-level orderby with a NESTED composite groupby reduction:
+    # orderby pre-sorts the WHOLE group, which decides row order WITHIN each
+    # composite subgroup too -- so it governs the tie-break of an
+    # order-sensitive verb (first) nested inside the reduction, even though
+    # orderby cannot attach directly to the nested groupby itself.
+    #   year 2020: t=2(20.0), t=1(10.0)  -> earliest t is 10.0
+    #   year 2021: t=5(40.0), t=3(30.0)  -> earliest t is 30.0
+    #   last(...) picks the LATEST year (2021) -> earliest-t value there
+    panel = DataFrame(year = [2021, 2020, 2020, 2021], t = [5, 2, 1, 3],
+                      val  = [40.0, 20.0, 10.0, 30.0])
+    ordered = liftAggrSpecToFunc(:val, aggr"last(first(_) |> groupby(year)) |> orderby(t)")
+    @test Base.invokelatest(ordered, panel) == 30.0
+    # without orderby, the same spec is at the mercy of frame order (here,
+    # the FIRST-encountered 2021 row, t=5 -> 40.0) -- not a meaningful answer
+    unordered = liftAggrSpecToFunc(:val, aggr"last(first(_) |> groupby(year))")
+    @test Base.invokelatest(unordered, panel) == 40.0
 end
 
 @testset "orderby on pivot dims (group ordering)" begin

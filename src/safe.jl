@@ -628,6 +628,12 @@ function parseaggr_impl(src::String)
         "reduction instead: \"mean(sum(_) |> groupby(year))\". (orderby IS " *
         "allowed at the top level: \"first(_) |> orderby(date)\")",
     )
+    any(p -> p.first == :_, order) && error(
+        "parseaggr: '_' has no meaning in orderby -- it names the " *
+        "aggregation target, which is bound to a real column only when " *
+        "the spec is applied (the same spec can target different columns), " *
+        "not a fixed row-order key. Order by a real column instead.",
+    )
     if isa(ex, Symbol)                   # aggr"sum" -- bare registered name
         haskey(SafeOps, ex) || unknown_op_error("parseaggr", ex)
         ex = Expr(:call, ex, :_)         # lower to sum(_), like trusted :sum

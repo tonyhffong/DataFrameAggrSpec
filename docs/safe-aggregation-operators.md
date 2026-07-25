@@ -158,6 +158,24 @@ aggr"last(sum(_) |> groupby(year))"      # the LATEST year's total
   `aggr"sum(_) |> groupby(year)"` is an error (one value per year is not one
   value); wrap it in a reduction. `orderby` cannot attach to a nested
   grouped reduction: subgroup order is the key sort.
+- a **top-level** `orderby` still composes with a nested composite reduction,
+  though — it pre-sorts the WHOLE group before anything else runs, which
+  decides row order *within* every composite subgroup too, so it governs the
+  tie-break of an order-sensitive verb nested inside the reduction:
+
+  ```julia
+  aggr"last(first(_) |> groupby(year)) |> orderby(t)"
+  # within each year, `first(_)` now reads the row with the smallest `t`;
+  # `last(...)` then takes the latest year's such value -- "the value of _
+  # from the earliest t, within the latest year". Without `orderby(t)`, the
+  # inner first(_) falls back to unspecified frame order, same as any
+  # order-sensitive verb used bare.
+  ```
+
+  `_` itself has no meaning inside `orderby(...)` — it names the
+  aggregation target, bound to a real column only when the spec is applied
+  (the same spec can target different columns), not a fixed row-order key —
+  `aggr"... |> orderby(_)"` is a parse-time error. Order by a real column.
 
 ## Elementwise math (usable inside reductions)
 
