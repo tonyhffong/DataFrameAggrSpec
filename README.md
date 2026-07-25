@@ -15,10 +15,13 @@ DSL defined here safely.
 - [Aggregation](#aggregation)
   - [Composite aggregation](#composite-aggregation)
 - [Pipelines](#pipelines)
-- [The safe grammar, and extending it](#the-safe-grammar-and-extending-it)
-- [Advanced: trusted Expr specs](#advanced-trusted-expr-specs)
-- [Presentation verbs](#presentation-verbs)
-- [Trust boundary](#trust-boundary)
+- [Untrusted input: the trust boundary](#untrusted-input-the-trust-boundary)
+  - [The rule, and the colon flip](#the-rule-and-the-colon-flip)
+  - [The safe grammar](#the-safe-grammar)
+  - [Extending the whitelist](#extending-the-whitelist)
+  - [Trusted Expr specs (advanced)](#trusted-expr-specs-advanced)
+- [Operator reference](#operator-reference)
+- [Design notes](#design-notes)
 
 ## Introduction
 
@@ -114,6 +117,14 @@ dim(df, [:rq => dim"quantiles(sales, [.5]) |> groupby(region)"])
 dim(df, [:big => dim"where(sales > 12)"])
 ```
 
+Notice what the classifying verbs emit: not codes, but **presentation-ready
+labels** — `"1. W"`, `"2. [25%, 50%)"`, `"3. 1 ≤ x < 2"`, an `"Others"`
+bucket for the unranked tail. The zero-padded rank prefix is deliberate: it
+makes *lexical* order the intended order, so the labels sort correctly as
+`CategoricalArray` levels, in a group-by, and in a rendered table, with no
+custom comparator anywhere. A dimension is meant to be looked at as well as
+grouped by.
+
 `dim` returns a new frame (the input is untouched); `dim!` adds the columns in
 place. Two postfix **modifiers** attach engine options to an intention spec 
 (our design favors putting intent first, modifier after).
@@ -133,7 +144,9 @@ dim(df, [:cum => dim"cumsum(sales) |> groupby(region) |> orderby(sales => :desc)
 ```
 
 Modifier textual order carries no meaning (`groupby |> orderby` ≡
-`orderby |> groupby` — they are options, like keyword arguments). The available operations are
+`orderby |> groupby` — they are options, like keyword arguments; see
+[design/compound-modifiers.md](design/compound-modifiers.md) for why that
+has to be true). The available operations are
 listed in [docs/safe-dimension-operators.md](docs/safe-dimension-operators.md).
 
 `groupby`'s keys may be **computed**, not just bare columns —
@@ -354,12 +367,41 @@ df |> dim([:region, :z => dim"(sales - mean(sales)) / std(sales)"]) |> report
 (report ∘ dim([...]))(df)             # Base ∘ composes transforms
 ```
 
-## The safe grammar, and extending it
+## Untrusted input: the trust boundary
 
-The string specs above are parsed by a **whitelist grammar with no eval
-anywhere** — safe to wire to an end user's text field, which is exactly what a
-TUI/GUI host does at runtime via `parseaggr(s)` / `parsedim(s)` (the string
-macros are compile-time sugar for the same thing).
+Every `dim"..."` and `aggr"..."` above was a **string** — and strings are the
+one spec form that can arrive from an end user's text field by accident. That
+is the situation this section is about, and it is the reason the package
+exists in this shape.
+
+### The rule, and the colon flip
+
+**`Expr` / `Symbol` / `Function` specs are trusted; plain `String`s are
+untrusted** — parsed by the safe whitelist grammar everywhere in the API,
+with no exceptions: chains, dimension constructors, `dimspec`, `AggrHints`,
+`liftAggrSpecToFunc`. A String can never reach `eval`.
+
+Trusted `Expr` specs are compiled with `Core.eval(Main, …)` so that
+module-qualified names (`StatsBase.mean`) resolve against your loaded
+packages. The guards (must be a `:call`, no curly type-params, simple/dotted
+names only, reject any `!`) make this safe for **specs you author** but are
+**not a sandbox** — the sandbox is the String/untrusted path.
+
+Trust is decided per spec and never escalates: a user-typed `dim"..."` sitting
+next to a host-authored `Expr` in the same chain gains nothing from the
+neighbour ([design/composition-rules.md](design/composition-rules.md), R5).
+
+**The colon flip mnemonic** (crossing the boundary): the colon marks the
+exception. In trusted Exprs everything is Julia, so *columns* need the colon
+(`:( sum(:sales) )`); in untrusted strings everything is a column, so *symbol
+literals* need the colon (`"discretize(x, [0], boundedness = :boundedbelow)"`).
+
+### The safe grammar
+
+String specs are parsed by a **whitelist grammar with no eval anywhere** —
+safe to wire to an end user's text field, which is exactly what a TUI/GUI
+host does at runtime via `parseaggr(s)` / `parsedim(s)` (the string macros
+are compile-time sugar for the same thing).
 
 - bare identifier = **column** in every position (`District`, `wt`); `_` = the
   target column (aggr specs only); `:sym` = a Symbol option value
@@ -414,7 +456,9 @@ parseaggr(usertext; columns = propertynames(df))   # sum(qtty) — did you mean 
 sources, dimension inputs), so misspelled columns fail with a suggestion
 instead of a bare DataFrames indexing error.
 
-Hosts extend the whitelist deliberately, in code:
+### Extending the whitelist
+
+Hosts extend the whitelist deliberately, in code — never via spec strings:
 
 ```julia
 registerop!(:double, x -> 2 .* x)              # dim"double(sales)"
@@ -428,16 +472,15 @@ registerop!(:tophalf, (name, measure) -> ...)
 registerclassifier!(:tophalf, 1)               # dim"tophalf(District, TestScr)"
 ```
 
-## Advanced: trusted Expr specs
+### Trusted Expr specs (advanced)
 
-Everything below is for package developers who need to go beyond the safe
-operators — full Julia inside a spec.
+The other side of the boundary, for package developers who need to go beyond
+the safe operators — full Julia inside a spec.
 
-**Trusted specs are `Expr`s** (also bare `Symbol`s and functions — forms that
-cannot arrive from a text field). They are compiled with `Core.eval(Main, …)`,
-so module-qualified names resolve against *your* loaded packages. Quoted
-symbols mark columns (`:sales`), `:_` marks the aggregation target, and
-`^(:sym)` escapes a symbol from column substitution:
+Trusted specs are `Expr`s (also bare `Symbol`s and functions — forms that
+cannot arrive from a text field). Quoted symbols mark columns (`:sales`),
+`:_` marks the aggregation target, and `^(:sym)` escapes a symbol from column
+substitution:
 
 ```julia
 using StatsBase
@@ -462,41 +505,41 @@ dim(df, [:County, :top1 => dim"topnames(District, TestScr, 1)"],   # user-typed 
         [:County, :top1, :cum => dim"cumsum(EnrlTot) |> orderby(TestScr)"])
 ```
 
-## Presentation verbs
+## Operator reference
 
-- **`discretize(x, breaks; …)`** / `discretize(x; quantiles/ngroups)` — bin a
-  numeric vector into a `CategoricalArray` of human-readable labels
-  (`"2. [0,1)"`, `"3. 1 ≤ x < 2"`, `"5. 3+"`), with rank prefixes, compact
-  intervals, boundedness modes, and quantile-based auto-breaks.
-- **`topnames(name, measure, n; …)`** — top-N ranking with tie handling
-  (`dense`), an `"Others"` bucket, absolute-value mode, parenthesised negatives.
-- **`quantiles(measure, qs; …)`** — quantile-bucket labels
-  (`"1. [0%, 25%)"`), for groups or individual rows.
-- **`strjoinuniq(x, sep, limit)`** — unique values as a sorted, joined,
-  length-capped display string.
-- **`lag(v, n; default)` / `lead(v, n; default)`** — shifted siblings, for
-  order-based window dimensions.
-- **`uniqvalue`**, **`countuniq`**, **`unionall`** — the single unique value /
-  count-distinct / flattened union.
-- **`yyyy` / `yyyyq` / `yyq` / `yyyymm` / `yymm`** — calendar-bucket labels
-  (`"2025Q3"`, `"202507"`; optional delimiter: `yyyymm(t, "/")` → `"2025/07"`)
-  whose lexical order is chronological order — coarser buckets, not cycles,
-  so year boundaries group correctly.
+Every shipped operator — signature, kwargs, and a worked example — lives in
+the two operator documents, which a test keeps in sync with the registry:
 
-## Trust boundary
+- [docs/safe-dimension-operators.md](docs/safe-dimension-operators.md) —
+  classifiers (`topnames`, `discretize`, `quantiles`, `where`), calendar
+  buckets, order-based verbs (`cumsum`, `lag`, `lead`), the modifiers.
+- [docs/safe-aggregation-operators.md](docs/safe-aggregation-operators.md) —
+  reductions, `uniqvalue` / `countuniq` / `strjoinuniq` / `unionall`,
+  `wmeanfallback`, and the rules for composite aggregation.
 
-**The rule: `Expr` / `Symbol` / `Function` specs are trusted; plain `String`s
-are untrusted** — parsed by the safe whitelist grammar everywhere in the API, with
-no exceptions. Strings are the one spec form that can arrive from a user's text
-field by accident, so they can never reach eval.
+`listops()` prints the live registry, including anything a host has added
+with `registerop!`.
 
-Trusted `Expr` specs are compiled with `Core.eval(Main, …)` so that
-module-qualified names (`StatsBase.mean`) resolve against your loaded packages.
-The guards (must be a `:call`, no curly type-params, simple/dotted names only,
-reject any `!`) make this safe for **specs you author** but are **not a
-sandbox** — the sandbox is the String/untrusted path.
+## Design notes
 
-**The colon flip mnemonic** (crossing the boundary): the colon marks the
-exception. In trusted Exprs everything is Julia, so *columns* need the colon
-(`:( sum(:sales) )`); in untrusted strings everything is a column, so *symbol
-literals* need the colon (`"discretize(x, [0], boundedness = :boundedbelow)"`).
+`design/` records the reasoning behind decisions that look arbitrary until
+you hit the case that motivated them. Worth reading before filing an issue
+that begins "why doesn't it just…":
+
+- [composition-rules.md](design/composition-rules.md) — the invariants the
+  package guarantees: left-context visibility, `dim` non-destructive vs `agg`
+  destructive (and why `agg` decomposes exactly into `dim` + reduce, which is
+  the debugging technique), trust never escalating through composition.
+- [expressiveness.md](design/expressiveness.md) — why the vocabulary has the
+  shape it has, and which spellings were declined (`ifelse`, `&`/`|`,
+  aliases for Base names). **Read before requesting a new operator.**
+- [prior-art.md](design/prior-art.md) — how this relates to Elasticsearch
+  bucket/metric aggregations, MongoDB `$setWindowFields`, Tableau LOD
+  expressions, and DAX calculated columns vs measures.
+- Syntax rationale: [why-two-modifier-names.md](design/why-two-modifier-names.md)
+  (why `orderby`/`groupby` and not a single `by`),
+  [glyph-choice.md](design/glyph-choice.md) (why `∘`/`|>` and not `.`),
+  [compound-modifiers.md](design/compound-modifiers.md) (why modifier order
+  carries no meaning),
+  [middle-windowpivot-usecase.md](design/middle-windowpivot-usecase.md) (why
+  ordered window dims may sit mid-chain).
