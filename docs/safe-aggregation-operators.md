@@ -46,6 +46,8 @@ Whole-vector functions that produce the aggregate value.
 | `length` | group row count | `aggr"length(_)"` |
 | `nrow` | group row count (DataFrames.jl-flavored alias for `length`) | `aggr"nrow"` |
 | `count` | number of `true`s | `aggr"count(_ > 0)"` |
+| `any` | `true` if any value is truthy | `aggr"any(_ > 100)"` |
+| `all` | `true` if every value is truthy | `aggr"all(_ > 0)"` |
 | `first` | first value in the group | `aggr"first(_)"` |
 | `last` | last value in the group | `aggr"last(_)"` |
 | `skipmissing` | drop missings before reducing | `aggr"sum(skipmissing(_))"` |
@@ -65,6 +67,11 @@ so fallbacks cascade: `coalesce(_, backup, 0)`); **flag** —
 `missing` is a column name in this grammar, so write `coalesce(x, 0)`, never
 `coalesce(x, missing)`.
 
+`any`/`all` compose directly with `where` for group-level flags — today's
+alternative spellings, `count(cond) > 0` / `count(cond) == length(_)`, still
+work but read less directly: `aggr"where(any(_ > 100))"` labels a group
+`"any(_ > 100)"` when at least one row clears the threshold.
+
 ## Combining reductions with arithmetic
 
 Arithmetic operators are whitelisted with **broadcast semantics**, so ratios of
@@ -82,6 +89,7 @@ aggr"std(_) / mean(_)"             # coefficient of variation
 |---|---|
 | `+` `-` `*` `/` `^` | arithmetic, elementwise when an argument is a column (dotted spellings `.+` `.-` `.*` `./` `.^` are aliases) |
 | `==` `!=` `<` `<=` `>` `>=` `≠` `≤` `≥` | comparisons, elementwise; combine with `count` (dotted spellings are aliases) |
+| `in` `∈` `∉` | membership test, `x in [1, 2, 5]` (`∈` is a Unicode alias for `in`; `∉` negates) — the item broadcasts elementwise, the collection (literal array or a column) is compared as a WHOLE, not zipped against the item | `aggr"count(_ in [1, 2, 5])"` |
 
 ## Composite aggregation (nested `groupby`)
 

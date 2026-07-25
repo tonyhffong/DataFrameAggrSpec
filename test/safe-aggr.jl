@@ -30,6 +30,8 @@ using Test
         ("length",      "length(_)",           v,                4),
         ("nrow",        "nrow",                v,                4),
         ("count",       "count(_ > 2)",        v,                2),
+        ("any",         "any(_ > 3)",          v,                true),
+        ("all",         "all(_ > 0)",          v,                true),
         ("first",       "first(_)",            v,                4.0),
         ("last",        "last(_)",             v,                2.0),
         ("skipmissing", "sum(skipmissing(_))", [1, missing, 2],  3),
@@ -106,6 +108,11 @@ end
     out = agg(df, :g; hints = AggrHints(:v => aggr"where(sum(_) > 5)"),
               cols = [:v => aggr"where(sum(_) > 5)" => :big])
     @test out.big == ["Not sum(_) > 5", "sum(_) > 5"]
+
+    # any/all compose directly with where for group flags (the readable
+    # alternative to count(cond) > 0 / count(cond) == length(_))
+    @test aggr"where(any(_ > 100))".f([60.0, 150.0]) == "any(_ > 100)"
+    @test aggr"where(all(_ > 100))".f([60.0, 150.0]) == "Not all(_ > 100)"
 end
 
 @testset "composite aggregation (nested groupby)" begin

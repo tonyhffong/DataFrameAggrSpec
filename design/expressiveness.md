@@ -107,6 +107,15 @@ numeric uses have existing spellings (`max(x, 0)`, `x * (x > 0)`), and
 anything beyond that is host `registerop!` territory. Do not re-propose
 without a use case that none of those three cover.
 
+**A subset-mask verb (SQL `FILTER`, dplyr's `x[cond]`) is declined.** The
+rationale here is dimension-first: make the condition a chain key and reduce —
+`agg(df, [:test => dim"where(cond)"], cols = [:x => aggr"median(_)"])`. The
+condition stays visible on the output as a dimension, the complement group
+comes for free, and the reduction stays traceable through the R3
+decomposition (drop to `dim`, inspect the contributing rows). A mask verb
+would bury the condition inside a measure and hide the rows it discarded —
+pleasing casual `FILTER` muscle memory at the cost of the design's integrity.
+
 **`where` labels itself.** `dim"where(sales > 100)"` labels rows
 `"sales > 100"` / `"Not sales > 100"` — the label defaults to the
 condition's own source text, so the new column reads as its own definition.
@@ -155,7 +164,11 @@ bucketing one. Second, the shipped formats are year-first and zero-padded, so
 verb labels rely on, which makes them usable as keys with no custom sort.
 
 Seasonality is a legitimate need; it is host `registerop!` territory, where
-any `Dates` accessor can be added in one line.
+any `Dates` accessor can be added in one line. **Durations** (date
+differences — tenure, gaps, sessionization thresholds) are the same call:
+a duration is a domain *measure*, not a bucket, so the host registers a
+duration verb (e.g. a day-count between two date columns) and composes it
+with the tools here.
 
 ## Deliberately unregistered
 
@@ -166,6 +179,8 @@ A quick index, so these are not rediscovered one at a time:
 | `ifelse` | `where`, `max(x, 0)`, `x * (x > 0)` | labeling case covered; residual has spellings |
 | `&` / `\|` | `&&` / `\|\|` | avoids the binds-tighter-than-comparison trap |
 | `unique` | `countuniq`, `uniqvalue`, `strjoinuniq` | a whole-vector `unique` in a dim spec yields confusing length-mismatch errors |
+| a subset-mask verb (SQL `FILTER`) | `where(cond)` as a chain key, then reduce | the condition stays a visible, traceable dimension — see the Boolean section |
+| date durations (day counts, gaps) | host `registerop!` a duration measure | domain measures, not buckets — host territory, like seasonality |
 | a unified `by` modifier | `orderby` / `groupby` | see `why-two-modifier-names.md` — the pair is the kind selector for dual-use verbs |
 | `.` as modifier separator | `∘` / `\|>` | see `glyph-choice.md` — breaks the "no dots, ever" trust-boundary line |
 | aliases for Base names | the Julia name | breaks vocabulary portability across the trust boundary |
@@ -194,6 +209,10 @@ by = ...)` does it from Julia, but an in-string `groupby(...)` always flips
 the spec to *pivot* kind — that is its defined job. So from a string, the
 only way to widen a window partition is to add a chain key, which changes
 `agg` granularity as a side effect.
+
+The mirror image — a *coarser*-than-context window partition (Tableau's
+`FIXED` / percent-of-parent) — is the same accepted boundary with the same
+answer: a separate statement with a shorter context.
 
 This is anticipated by `why-two-modifier-names.md`: the two modifiers are the
 kind selector, and a window-widening `by` would be a third meaning competing

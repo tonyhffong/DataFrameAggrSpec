@@ -258,8 +258,8 @@ dim"sales > mean(sales)"                     # above-group-average flag
 
 Available reductions (same functions as the aggregation side): `sum` `prod`
 `mean` `median` `std` `var` `quantile` `minimum` `maximum` `extrema` `length`
-`nrow` `count` `first` `last` `skipmissing` `uniqvalue` `countuniq` `unionall`
-`wmeanfallback`
+`nrow` `count` `any` `all` `first` `last` `skipmissing` `uniqvalue` `countuniq`
+`unionall` `wmeanfallback`
 (e.g. `dim"countuniq(District)"` — the distinct-District count on every
 member row of the partition).
 
@@ -282,6 +282,16 @@ member row of the partition).
   columns, handy as pivot keys — a bare condition is a legal spec
   (`dim"sales > 10 && sales < 20"`), and `where` turns one into readable
   labels.
+- `in` — membership test, `dim"district in [\"d1\", \"d2\", \"d5\"]"`. The
+  item (left side) broadcasts elementwise; the collection (right side, a
+  literal `[ ... ]` array or a column) is compared as a WHOLE, not zipped
+  element-by-element against the item — the bug a naive broadcast of `in`
+  would have. This is the whitelisted replacement for a chain of `||`
+  equality checks: `dim"where(x in [1, 2, 5])"` labels rows
+  `"x in [1, 2, 5]"` / `"Not x in [1, 2, 5]"`, where the unwieldy alternative
+  is `dim"where(x == 1 || x == 2 || x == 5)"`.
+  **`∈`** is the Unicode spelling of `in` (`x ∈ [1, 2, 5]`, same closure);
+  **`∉`** is its negation (`x ∉ [1, 2, 5]` ≡ `!(x in [1, 2, 5])`).
 
 ## Extending the whitelist
 

@@ -59,7 +59,7 @@ bcast(f) = (args...; kwargs...) -> Base.broadcast((a...) -> f(a...; kwargs...), 
 for f in (
     # reductions (whole-vector)
     sum, prod, mean, median, std, var, quantile, minimum, maximum, extrema,
-    length, count, first, last, skipmissing,
+    length, count, first, last, skipmissing, any, all,
     # package verbs
     uniqvalue, countuniq, unionall, strjoinuniq, topnames, discretize, quantiles, lag, lead, where,
     wmeanfallback,
@@ -98,6 +98,23 @@ for (name, f) in Any[
     SafeOps[name] = b
     SafeOps[Symbol("." * string(name))] = b
 end
+
+# `in`: SQL/dplyr-style membership, `x in [1, 2, 5]`. Julia lowers infix `in`
+# to an ordinary :call (fname :in), so it reaches the compiler and the
+# registry exactly like any other operator -- no structural special case
+# needed. NOT bcast(in): that would broadcast over the collection argument
+# too (zip semantics -- silently wrong when the item and collection lengths
+# happen to match, a shape error otherwise). Ref-protect the collection so it
+# is compared as a WHOLE, once per item, whether it came from a literal
+# array or a column.
+SafeOps[:in] = (x, coll) -> Base.broadcast(in, x, Ref(coll))
+
+# ∈ / ∉: Unicode spellings. `Base.:∈ === in` (the identical function, just a
+# second token the parser accepts -- unlike `≠`/`≤`/`≥`, which are distinct
+# functions wrapping the same closure), so this is a shared reference, not a
+# copy. `∉` is `in`'s negation and needs its own Ref-protected closure.
+SafeOps[:∈] = SafeOps[:in]
+SafeOps[:∉] = (x, coll) -> Base.broadcast(Base.:∉, x, Ref(coll))
 
 # snapshot of the shipped registry, before any host registerop! calls.
 # EVERY operator here must be documented in docs/safe-aggregation-operators.md

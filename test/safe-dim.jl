@@ -180,6 +180,35 @@ end
     @test dim"a .< b".f(a, b) == dim"a < b".f(a, b)
 end
 
+@testset "in" begin
+    # membership: the item broadcasts, the collection is Ref-protected --
+    # compared as a WHOLE, not zipped elementwise against the item vector
+    @test dim"x in [1, 2, 5]".f([1, 2, 3, 5]) == [true, true, false, true]
+    @test dim"x in [1, 2, 5]".cols == [:x]        # the literal array is not a column
+
+    # the collection can itself be a column -- membership against its whole
+    # set of values, still not a row-by-row zip (lengths need not even match)
+    @test dim"x in y".f([1, 2, 3], [2, 3, 3]) == [false, true, true]
+
+    # missing item propagates (Julia's own `in` semantics)
+    @test isequal(dim"x in [1, 2, 5]".f([1, missing]), [true, missing])
+
+    # the replacement for a chain of == / || checks, composed with where
+    lab = dim"where(x in [1, 2, 5])".f([1, 3])
+    @test string.(lab) == ["x in [1, 2, 5]", "Not x in [1, 2, 5]"]
+
+    @testset "∈" begin   # Unicode spelling, same closure as `in`
+        @test dim"x ∈ [1, 2, 5]".f([1, 2, 3, 5]) == dim"x in [1, 2, 5]".f([1, 2, 3, 5])
+    end
+
+    @testset "∉" begin   # negation
+        @test dim"x ∉ [1, 2, 5]".f([1, 2, 3, 5]) == [false, false, true, false]
+        @test isequal(dim"x ∉ [1, 2, 5]".f([1, missing]), [false, missing])
+        lab = dim"where(x ∉ [1, 2, 5])".f([1, 3])
+        @test string.(lab) == ["Not x ∉ [1, 2, 5]", "x ∉ [1, 2, 5]"]
+    end
+end
+
 @testset "discretize" begin
     q1 = dim"discretize(TestScr, quantiles=[.25,.5,.75])"
     q2 = dim"discretize(TestScr; quantiles=[.25,.5,.75])"
