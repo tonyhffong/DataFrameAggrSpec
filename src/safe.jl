@@ -23,6 +23,14 @@
 # blocks, comprehensions, splats, ternaries -- is rejected with a clear error.
 # Note one wrinkle of "bare identifier = column": `missing`, `pi`, `Inf` are
 # identifiers, hence column references, not constants.
+#
+# INCLUDE ORDER: this file loads after verbs.jl (the registry references verbs)
+# and BEFORE dimension.jl (whose signatures mention SafeDimSpec). One deliberate
+# exception cuts the other way: liftAggrSpecToFunc's SafeAggrSpec method calls
+# order_indices, defined later in dimension.jl with the rest of the ordering
+# primitives. That is fine -- the call sits inside a runtime closure, so the
+# name resolves at call time (whole module loaded), not at include time. Keep
+# any NEW backward reference to the same shape: runtime-only, never top level.
 
 const SafeOps = Dict{Symbol,Base.Callable}()   # Callable: constructors (Weights) too
 

@@ -60,6 +60,9 @@ normalize_order(x) = Pair{Symbol,Bool}[orderentry(x)]
 # sort (window_values, below) and aggregation-spec ordering (SafeAggrSpec.order,
 # applied in liftAggrSpecToFunc, safe.jl) -- both are "sort these group rows
 # by these keys before the spec runs," differing only in what runs after.
+# Note safe.jl loads BEFORE this file, so that caller is a backward reference;
+# it works because the call sits inside a runtime closure (see safe.jl's
+# include-order note). Do not move this to top-level use from safe.jl.
 function order_indices(df::AbstractDataFrame, idxs::AbstractVector{<:Integer},
                         order::Vector{Pair{Symbol,Bool}})
     isempty(order) && return idxs

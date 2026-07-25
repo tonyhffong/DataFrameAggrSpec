@@ -7,8 +7,12 @@ module DataFrameAggrSpec
 #
 #   * aggregation specs — `liftAggrSpecToFunc(:col, spec)` where `spec` is a
 #     Symbol (`:sum`), an Expr (`:( mean(:_, :wcol) )`, with `:_` the on-the-fly
-#     target column and `:col` a named column reference), or a `df -> ...`
-#     lambda. `AggrHints` resolves per-column specs (col > eltype > default).
+#     target column and `:col` a named column reference), a `df -> ...`
+#     lambda, or a String / `SafeAggrSpec` (`aggr"mean(_)"` — the untrusted
+#     path, see the trust boundary below). A safe spec may carry a top-level
+#     `|> orderby(cols...)`, which sorts the group's rows before the reduction
+#     runs — what `first`/`last` need to mean anything. `AggrHints` resolves
+#     per-column specs (col > eltype > default).
 #   * dimensioning — NEW columns computed from sibling rows sharing partition
 #     keys, declared ONLY in chains: `name => spec` entries partitioned by
 #     their left context, options via `dimspec(spec; by, order, kind)`. Two
@@ -23,8 +27,11 @@ module DataFrameAggrSpec
 #     same column several times under distinct names. Curried
 #     `dim(...)`/`agg(...)` return callable transforms composable with `|>`/`∘`.
 #   * presentation verbs — `discretize` (labeled/ranked binning), `topnames`
-#     (top-N ranking with tie/dense/"Others" handling), `lag`/`lead`,
-#     `rank`/`denserank`.
+#     (top-N ranking with tie/dense/"Others" handling), `quantiles`, `where`
+#     (self-labeling Boolean flag), `lag`/`lead`, the ranking quartet
+#     `rank`/`denserank`/`ordinalrank`/`tiedrank` (NOT exported — name
+#     collisions; see the export block below), `wmeanfallback`, and the
+#     date-bucket labels `yyyy`/`yyyyq`/`yyq`/`yyyymm`/`yymm`.
 #
 # SECURITY / TRUST BOUNDARY — the rule: Expr/Symbol/Function specs are TRUSTED;
 # plain Strings are UNTRUSTED and parsed by the safe whitelist grammar (safe.jl —
