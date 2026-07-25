@@ -46,7 +46,18 @@ the whitelist at all.
     predate the convention; the date buckets take a **positional** delimiter
     (`yyyymm(t, "/")`) for typeability in a TUI field, where
     `yyyymm(t, delim = "/")` is a real cost.
-- **No underscores** in operator names.
+- **No underscores** in operator names. This is why the ranking quartet is
+  `denserank`/`ordinalrank`/`tiedrank` and not the SQL/dplyr `dense_rank` /
+  `row_number`.
+- **Where a Julia package already owns the concept, take its spelling** even
+  when that package is not a dependency. The ranking verbs match StatsBase
+  (`denserank`, `ordinalrank`, `tiedrank`) rather than SQL, because the
+  audience reads Julia; borrowed capital works the same way it does for
+  `coalesce`.
+  - *Exception:* `rank` is StatsBase's `competerank`. SQL's `RANK()` is the
+    far commoner name for the commonest member of the family, and unlike the
+    other three, `rank` is not a StatsBase-owned concept. This is a deviation,
+    not a precedent for aliasing — there is still exactly one spelling.
 - **Name the resulting selection, not the action.** `agg`'s `allbut = [:gap]`
   was chosen over `drop = [:gap]`: it reads as the intent ("aggregate all but
   gap") and makes its mutual exclusivity with `cols` self-evident, where
@@ -158,6 +169,23 @@ A quick index, so these are not rediscovered one at a time:
 | a unified `by` modifier | `orderby` / `groupby` | see `why-two-modifier-names.md` — the pair is the kind selector for dual-use verbs |
 | `.` as modifier separator | `∘` / `\|>` | see `glyph-choice.md` — breaks the "no dots, ever" trust-boundary line |
 | aliases for Base names | the Julia name | breaks vocabulary portability across the trust boundary |
+
+## When a shipped verb should not be exported
+
+Verbs are exported so trusted `Expr` specs — which `Core.eval` in `Main` — can
+name them unqualified. The ranking quartet is the standing exception: `rank`
+collides with `LinearAlgebra.rank` and the other three with their StatsBase
+namesakes, all routinely loaded next to DataFrames.
+
+The rule this settled: **adding an operator must not break code a host already
+has.** Exporting a colliding name does exactly that — a working bare
+`denserank(x)` in a host session becomes an ambiguity `UndefVarError`, at a
+distance, with no mention of this package. Registry membership is what a string
+spec needs, and it is independent of exports, so the cost of *not* exporting is
+borne only by trusted-`Expr` callers, who can qualify.
+
+Apply the same test to any future verb whose name a widely-loaded package also
+exports.
 
 ## Known residual gap: widening a window partition from a string
 

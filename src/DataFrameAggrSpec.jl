@@ -23,7 +23,8 @@ module DataFrameAggrSpec
 #     same column several times under distinct names. Curried
 #     `dim(...)`/`agg(...)` return callable transforms composable with `|>`/`∘`.
 #   * presentation verbs — `discretize` (labeled/ranked binning), `topnames`
-#     (top-N ranking with tie/dense/"Others" handling), `lag`/`lead`.
+#     (top-N ranking with tie/dense/"Others" handling), `lag`/`lead`,
+#     `rank`/`denserank`.
 #
 # SECURITY / TRUST BOUNDARY — the rule: Expr/Symbol/Function specs are TRUSTED;
 # plain Strings are UNTRUSTED and parsed by the safe whitelist grammar (safe.jl —
@@ -44,7 +45,7 @@ using Base.Meta
 include("exprsubst.jl")   # spec-expression substitution machinery + guards
 include("suggest.jl")     # OSA "did you mean" helpers for user-facing errors
 include("aggrspec.jl")    # aggregation-spec compiler (liftAggrSpecToFunc) + AggrHints
-include("verbs.jl")       # discretize / topnames / uniqvalue / unionall / lag / lead
+include("verbs.jl")       # discretize / topnames / uniqvalue / unionall / lag / lead / rank
 include("safe.jl")        # UNTRUSTED whitelist DSL: aggr"..." / dim"..." (needs verbs;
                           # dimension.jl signatures need SafeDimSpec -- keep this order)
 include("dimension.jl")   # WindowDim / PivotDim dimensioning engine
@@ -64,6 +65,15 @@ export dimspec, dim, dim!
 # Aggregation / presentation verbs
 export uniqvalue, countuniq, unionall, strjoinuniq, discretize, topnames, quantiles, lag, lead, where
 export wmeanfallback
+# The ranking quartet (rank/denserank/ordinalrank/tiedrank) is deliberately NOT
+# exported, the one exception to the "every verb is exported" rule: `rank`
+# collides with LinearAlgebra.rank (matrix rank) and the other three with their
+# StatsBase namesakes, both routinely loaded next to DataFrames. Exporting would
+# turn a working bare `denserank(x)` in a host session into an ambiguity
+# UndefVarError -- an operator addition must not break a host's existing code.
+# Nothing is lost: untrusted string specs read the SafeOps registry, not Main's
+# bindings, so dim"rank(x)" works regardless, and trusted Exprs can qualify
+# (DataFrameAggrSpec.rank, or StatsBase's own).
 # Date-bucketing labels (lexical order = chronological order)
 export yyyy, yyyyq, yyq, yyyymm, yymm
 

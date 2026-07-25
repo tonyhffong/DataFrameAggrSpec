@@ -50,6 +50,85 @@ end
     @test isequal(dim"lead(x, 2)".f([1, 2, 3]), [3, missing, missing])
 end
 
+@testset "rank" begin
+    # competition ranking: ties share a rank and SKIP the slots they consume
+    @test dim"rank(x)".f([10, 20, 20, 30]) == [1, 2, 2, 4]
+    @test dim"rank(x, rev = true)".f([10, 20, 20, 30]) == [4, 2, 2, 1]
+    # missing ranks missing and takes no slot; eltype follows the INPUT
+    @test isequal(dim"rank(x)".f([10, missing, 20, 20]), [1, missing, 2, 2])
+    @test eltype(dim"rank(x)".f([3.0, 1.0])) === Int
+    @test isempty(dim"rank(x)".f(Int[]))
+    @test isequal(dim"rank(x)".f([missing, missing]), [missing, missing])
+
+    # ranks VALUES, not row positions -- permuting the input permutes the
+    # answer with it, which is why no `order` is needed (contrast lag/lead)
+    v, p = [10, 20, 20, 30], [3, 1, 4, 2]
+    @test dim"rank(x)".f(v[p]) == dim"rank(x)".f(v)[p]
+end
+
+@testset "denserank" begin
+    # no gaps: the largest rank is the number of DISTINCT values
+    @test dim"denserank(x)".f([10, 20, 20, 30]) == [1, 2, 2, 3]
+    @test dim"denserank(x, rev = true)".f([10, 20, 20, 30]) == [3, 2, 2, 1]
+    @test isequal(dim"denserank(x)".f([10, missing, 20, 20]), [1, missing, 2, 2])
+    @test maximum(dim"denserank(x)".f([5, 5, 5])) == 1
+end
+
+@testset "ordinalrank" begin
+    # ROW_NUMBER: no ties -- every element gets its own rank
+    @test dim"ordinalrank(x)".f([10, 20, 20, 30]) == [1, 2, 3, 4]
+    # ties break by INPUT POSITION, and `rev` does not reverse that: the
+    # first-occurring 20 keeps the lower rank in both directions
+    @test dim"ordinalrank(x)".f([20, 20, 10]) == [2, 3, 1]
+    @test dim"ordinalrank(x, rev = true)".f([10, 20, 20, 30]) == [4, 2, 3, 1]
+    @test isequal(dim"ordinalrank(x)".f([10, missing, 20, 20]), [1, missing, 2, 3])
+    @test sort(dim"ordinalrank(x)".f([5, 5, 5])) == [1, 2, 3]   # a permutation of 1:n
+
+    # the odd one out: position-based, so unlike the other three it is NOT
+    # permutation-equivariant -- this is why it pairs with `order`
+    v, p = [10, 20, 20, 30], [3, 1, 4, 2]
+    @test dim"ordinalrank(x)".f(v[p]) != dim"ordinalrank(x)".f(v)[p]
+end
+
+@testset "tiedrank" begin
+    # each tie group takes the AVERAGE of the ordinal ranks it spans
+    @test dim"tiedrank(x)".f([10, 20, 20, 30]) == [1.0, 2.5, 2.5, 4.0]
+    @test dim"tiedrank(x, rev = true)".f([10, 20, 20, 30]) == [4.0, 2.5, 2.5, 1.0]
+    @test dim"tiedrank(x)".f([5, 5, 5]) == [2.0, 2.0, 2.0]
+    @test isequal(dim"tiedrank(x)".f([10, missing, 20, 20]), [1.0, missing, 2.5, 2.5])
+    @test eltype(dim"tiedrank(x)".f([3, 1])) === Float64
+    # the defining property: ranks always sum to n(n+1)/2, however they tie
+    @test sum(dim"tiedrank(x)".f([2, 1, 2, 1, 3])) == 5 * 6 / 2
+    # value-based like rank/denserank, so permutation-equivariant
+    v, p = [10, 20, 20, 30], [3, 1, 4, 2]
+    @test dim"tiedrank(x)".f(v[p]) == dim"tiedrank(x)".f(v)[p]
+end
+
+@testset "ranking in the engine" begin
+    df = sddf()
+    # window kind, partitioned by the left context (County)
+    out = dim(df, [:County, :r => dim"rank(TestScr, rev = true)"])
+    @test out.r == [4, 3, 1, 2, 1, 2]      # C1: 10,20,50,30 | C2: 40,10
+    @test out.TestScr == df.TestScr        # non-destructive, original row order
+
+    # an `order` on the dimension cannot disturb a value-based rank
+    @test dim(df, [:County, :r => dimspec(dim"rank(TestScr)"; order = :TestScr)]).r ==
+          dim(df, [:County, :r => dim"rank(TestScr)"]).r
+
+    # ordinalrank is position-based, so the declared `order` decides its
+    # tie-break. District d1's two C1 rows both carry EnrlTot 100, and which of
+    # them takes the lower ordinal flips with the order:
+    noorder = dim(df, [:County, :n => dim"ordinalrank(EnrlTot)"]).n
+    desc = dim(df, [:County, :n => dim"ordinalrank(EnrlTot) |> orderby(TestScr => :desc)"]).n
+    @test noorder[1:4] == [3, 4, 2, 1]   # frame order: row 1's 100 ranks first
+    @test desc[1:4] == [4, 3, 2, 1]      # TestScr desc puts row 2 first instead
+    @test noorder != desc                # the contrast rank/denserank cannot show
+
+    # `groupby` ranks the GROUPS by their aggregate, broadcast to member rows
+    g = dim(df, [:County, :r => dim"rank(EnrlTot) |> groupby(District)"])
+    @test length(unique(g.r[g.District.=="d1"])) == 1   # one rank per district
+end
+
 @testset "elementwise math" begin
     # table-driven so each operator still gets a @testset NAMED for it
     for (op, spec, input, expected) in Any[

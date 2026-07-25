@@ -86,6 +86,86 @@ agg(df, [:ym => dim"yyyymm(t)"]; hints, allbut = [:t])
 Results are scattered back through the inverse sort permutation, so the new
 column stays aligned with the original row order.
 
+## Ranking (window kind)
+
+Four ways to number a partition's rows, differing only in how they treat
+**ties**. All take the kwarg `rev` (default `false`) and behave exactly as their
+StatsBase namesakes.
+
+| Operator | `10, 20, 20, 30` → | Ties | SQL / prior art |
+|---|---|---|---|
+| `rank` | `1, 2, 2, 4` | share a rank, then **skip** the slots consumed | `RANK()`, dplyr `min_rank`, StatsBase `competerank` |
+| `denserank` | `1, 2, 2, 3` | share a rank, **no gaps** — the largest rank is the number of *distinct* values | `DENSE_RANK()`, StatsBase `denserank` |
+| `ordinalrank` | `1, 2, 3, 4` | **no ties** — broken by row position | `ROW_NUMBER()`, StatsBase `ordinalrank` |
+| `tiedrank` | `1, 2.5, 2.5, 4` | share the tie group's **average** rank (`Float64`) | fractional rank, StatsBase `tiedrank` |
+
+Rank 1 is the **smallest** value by default, as in SQL, dplyr and StatsBase;
+`rev = true` flips it, which is the "biggest is #1" reading:
+
+```julia
+dim(df, [:County, :salesrank => dim"rank(sales, rev = true)"])
+# within each county: 1 = best-selling district
+```
+
+`rev` does **not** reverse the tie-break: the first-occurring member of a tie
+still takes the lower ordinal rank in both directions. `missing` ranks
+`missing` and consumes no rank slot; the result column is `Int` (`Float64` for
+`tiedrank`) unless the input column can hold `missing`.
+
+### `ordinalrank` is the one that needs an `order`
+
+`rank`, `denserank` and `tiedrank` rank **values**, so — unlike
+`cumsum`/`lag`/`lead` — they need no `order`. The answer is the same however
+the partition happens to be sorted, and an `order` added for a *sibling*
+dimension cannot disturb them.
+
+`ordinalrank` is the exception: it has to break ties somehow, and it breaks them
+by **row position**. That makes it position-based like `lag`/`lead`, so pair it
+with an `order` to get a defined answer:
+
+```julia
+dim(df, [:County, :n => dim"ordinalrank(sales) |> orderby(date)"])
+# 1 = the county's earliest row, counting up -- ties in `sales` resolved by date
+```
+
+Without one it numbers by whatever order the rows happen to sit in the frame,
+which is the analogue of SQL's `ROW_NUMBER()` with no `ORDER BY`. That is
+permitted here (exactly as bare `dim"lag(sales)"` is) rather than an error, but
+it is rarely what you mean.
+
+`tiedrank`'s defining property is that the ranks always sum to `n(n+1)/2`
+however the ties fall — it is the rank transform Spearman correlation is
+defined on, which is why it is the shape most Julia users expect from a
+"rank" that has to average.
+
+### Names and exports
+
+The four are **not exported** into `Main` — the lone exception to this
+package's export-every-verb rule. `rank` would collide with
+`LinearAlgebra.rank` (matrix rank) and the other three with their
+`StatsBase` namesakes, so exporting would turn a host's working bare
+`denserank(x)` into an ambiguity error. String specs are unaffected (they
+resolve against the registry, not `Main`); a *trusted* `Expr` spec should
+qualify: `:( DataFrameAggrSpec.tiedrank(:sales) )`.
+
+Three of the four use StatsBase's spelling exactly. `rank` is the deliberate
+deviation — StatsBase calls it `competerank`, but SQL's `RANK()` is the far
+commoner name for the commonest member of the family, and `rank` is not a
+StatsBase-only concept the way the other three are.
+
+### Ranking is not classification
+
+The output is a number, not a label, and the spec stays window kind. To rank
+*groups* rather than rows, aggregate them first with the `groupby` modifier:
+
+```julia
+dim(df, [:County, :r => dim"rank(EnrlTot) |> groupby(District)"])
+# ranks districts by their total enrollment, broadcasting each district's rank
+# back to its member rows
+```
+
+For a top-N *label* with an "others" bucket, reach for `topnames` instead.
+
 ### Modifiers
 
 Engine options attach to a spec with postfix **modifiers** — intent first,

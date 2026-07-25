@@ -232,7 +232,7 @@ construct:
 - **window** — a column binds to the partition's row-level subvector (sorted by
   `order` if given). The spec result is a scalar (broadcast to the partition)
   or a partition-length vector. Covers group totals, shares, z-scores,
-  `cumsum`/`lag`/`lead`/ranks. Bare specs default to this kind.
+  `cumsum`/`lag`/`lead`/`rank`. Bare specs default to this kind.
 - **pivot** — classifies *groups*: within each context partition, rows are
   grouped by the dimension's `by` keys, the referenced columns are aggregated
   per group (via `AggrHints`), the spec runs over those per-group vectors, and
@@ -419,7 +419,8 @@ are compile-time sugar for the same thing).
 - whitelisted operations only: reductions (`sum mean median std var quantile
   minimum maximum count length first last …`), the package verbs (`topnames
   discretize quantiles where uniqvalue countuniq unionall strjoinuniq lag
-  lead`), date buckets (`yyyy yyyyq yyq yyyymm yymm`), `cumsum`/`cumprod`,
+  lead`), the ranking quartet (`rank denserank ordinalrank tiedrank`),
+  date buckets (`yyyy yyyyq yyq yyyymm yymm`), `cumsum`/`cumprod`,
   and elementwise math (`abs log exp sqrt round ismissing coalesce …`).
   `listops()` shows the registry; the full reference lives in the two
   [docs/](docs/) operator documents.
@@ -512,7 +513,8 @@ the two operator documents, which a test keeps in sync with the registry:
 
 - [docs/safe-dimension-operators.md](docs/safe-dimension-operators.md) —
   classifiers (`topnames`, `discretize`, `quantiles`, `where`), calendar
-  buckets, order-based verbs (`cumsum`, `lag`, `lead`), the modifiers.
+  buckets, order-based verbs (`cumsum`, `lag`, `lead`), the ranking quartet
+  (`rank`, `denserank`, `ordinalrank`, `tiedrank`), the modifiers.
 - [docs/safe-aggregation-operators.md](docs/safe-aggregation-operators.md) —
   reductions, `uniqvalue` / `countuniq` / `strjoinuniq` / `unionall`,
   `wmeanfallback`, and the rules for composite aggregation.

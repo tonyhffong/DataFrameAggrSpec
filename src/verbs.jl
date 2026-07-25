@@ -628,6 +628,98 @@ function lead(v::AbstractVector, n::Integer = 1; default = missing)
     [i + n <= len ? v[i+n] : default for i = 1:len]
 end
 
+# The ranking quartet. Names, tie rules and `rev` semantics all follow
+# StatsBase, whose spellings the Julia audience already knows -- the one
+# deviation is `rank` for what StatsBase calls `competerank`, since SQL's RANK()
+# is the far commoner name for the commonest member (see the note in
+# docs/safe-dimension-operators.md). On 10,20,20,30:
+#
+#   rank         1,2,2,4      SQL RANK()        ties share, then SKIP the slots
+#   denserank    1,2,2,3      SQL DENSE_RANK()  ties share, no gaps -- max = #distinct
+#   ordinalrank  1,2,3,4      SQL ROW_NUMBER()  no ties, broken by input position
+#   tiedrank     1,2.5,2.5,4  fractional rank   ties get their AVERAGE rank
+#
+# Ascending by default (rank 1 = smallest, as in SQL / dplyr / StatsBase);
+# `rev = true` ranks largest-first, the "top seller" reading. Note `rev` does
+# NOT reverse the tie-break: with rev the first-occurring member of a tie still
+# takes the lower ordinal rank, matching StatsBase.
+#
+# missing ranks missing and consumes no rank slot. The result eltype follows the
+# INPUT's eltype, not its data, so a column that cannot hold missing ranks to a
+# plain Vector{Int} (Vector{Float64} for tiedrank).
+#
+# rank/denserank/tiedrank rank VALUES, not row positions: their results are
+# equivariant under permutation of the input, so a window dimension's `order`
+# sort and its inverse-perm scatter-back leave the answer unchanged.
+# `ordinalrank` is the exception -- its tie-break reads row order, so it is
+# position-based like lag/lead and pairs with an `order` to be meaningful.
+function rank(v::AbstractVector; rev::Bool = false)
+    _intranks(v, rev, :compete)
+end
+
+function denserank(v::AbstractVector; rev::Bool = false)
+    _intranks(v, rev, :dense)
+end
+
+function ordinalrank(v::AbstractVector; rev::Bool = false)
+    _intranks(v, rev, :ordinal)
+end
+
+# the non-missing indices in rank order. The sort MUST be stable: ordinalrank
+# breaks ties by input position, so the algorithm choice is semantics here, not
+# a performance knob (and `rev` reverses the ORDERING, leaving ties in place).
+function _rankorder(v::AbstractVector, rev::Bool)
+    idx = [i for i in eachindex(v) if !ismissing(v[i])]
+    sort!(idx; by = i -> v[i], rev = rev, alg = MergeSort)
+end
+
+function _intranks(v::AbstractVector, rev::Bool, mode::Symbol)
+    T = Missing <: eltype(v) ? Union{Missing,Int} : Int
+    out = Vector{T}(undef, length(v))
+    T === Int || fill!(out, missing)
+    idx = _rankorder(v, rev)
+    isempty(idx) && return out
+    r = 1
+    out[idx[1]] = r
+    for k = 2:length(idx)
+        # k is the rank this element would take if nothing tied: the number of
+        # values preceding it, plus one.
+        r = if mode === :ordinal
+            k                                   # every element its own rank
+        elseif isequal(v[idx[k-1]], v[idx[k]])
+            r                                   # tied -- share the rank
+        else
+            mode === :dense ? r + 1 : k         # dense skips no slots, compete does
+        end
+        out[idx[k]] = r
+    end
+    out
+end
+
+# tiedrank: each tie group gets the AVERAGE of the ordinal ranks it spans, so
+# the ranks always sum to n(n+1)/2. Float by construction (a 2-way tie lands on
+# a half). This is the rank transform Spearman correlation is defined on.
+function tiedrank(v::AbstractVector; rev::Bool = false)
+    T = Missing <: eltype(v) ? Union{Missing,Float64} : Float64
+    out = Vector{T}(undef, length(v))
+    T === Float64 || fill!(out, missing)
+    idx = _rankorder(v, rev)
+    n = length(idx)
+    k = 1
+    while k <= n
+        j = k
+        while j < n && isequal(v[idx[j+1]], v[idx[k]])
+            j += 1                              # extend over the tie group
+        end
+        avg = (k + j) / 2
+        for m = k:j
+            out[idx[m]] = avg
+        end
+        k = j + 1
+    end
+    out
+end
+
 # strjoinuniq: the unique non-missing values as strings, sorted and joined with
 # `sep`, capped at `limit` characters (a trailing "…" marks truncation).
 # Intended for concise group displays, e.g. the districts inside a county cell.

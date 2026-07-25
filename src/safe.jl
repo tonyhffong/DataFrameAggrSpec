@@ -64,7 +64,7 @@ for f in (
     uniqvalue, countuniq, unionall, strjoinuniq, topnames, discretize, quantiles, lag, lead, where,
     wmeanfallback,
     # vector transforms
-    cumsum, cumprod,
+    cumsum, cumprod, rank, denserank, ordinalrank, tiedrank,
 )
     SafeOps[Symbol(f)] = f
 end
