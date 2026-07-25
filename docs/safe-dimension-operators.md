@@ -46,6 +46,27 @@ A top-level `topnames` call is inferred as pivot kind; everything else defaults
 to window. Force the kind (and attach ordering or extra grouping keys) with
 `dimspec(dim"..."; by = ..., order = ..., kind = :pivot)`.
 
+### What may go under `groupby`
+
+A pivot dim **labels** groups, so its spec must give one value **per group**.
+That rules out reductions, which collapse the groups to a single value — the
+parser rejects them rather than letting the engine fail later with "spec must
+return one value per group":
+
+```julia
+dim"rank(sales) |> groupby(region)"                  # ✓ ranks the regions
+dim"quantiles(sales, ngroups = 4) |> groupby(region)"# ✓ buckets them
+dim"where(sales > 1000) |> groupby(region)"          # ✓ flags them
+dim"mean(sales) |> groupby(region)"                  # ✗ 'mean' reduces them
+```
+
+The check is driven by each operator's declared **shape** (`opshape`), and it
+composes — `where(sales > 12)` follows its condition and is fine, while
+`where(any(flag))` reduces first and is rejected, naming `any` as the culprit.
+A window dim is exempt: there a scalar legitimately broadcasts across the
+partition, which is what makes `dim"sales / sum(sales)"` work. To reduce the
+frame to one row per group, reach for `agg`, not `dim`.
+
 ## Classification verbs (pivot-kind workhorses)
 
 | Operator | Meaning | Example |

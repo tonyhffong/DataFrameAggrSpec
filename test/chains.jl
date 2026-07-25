@@ -43,7 +43,7 @@ import DataFrameAggrSpec: normalize_chain, WindowDim, PivotDim, dependencies   #
     catch e
         e
     end
-    @test err3 isa ErrorException && occursin("separate statements", err3.msg)
+    @test err3 isa Exception && occursin("separate statements", sprint(showerror, err3))
 
     # the blessed pattern: side measures as separate chains, each rebuilding
     # its context explicitly -- neither is in the other's context or keycols

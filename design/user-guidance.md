@@ -342,7 +342,8 @@ Recorded so they are not rediscovered as bugs.
 
 ## The machine-facing direction: linters and copilots
 
-*Investigation, 2026-07. Nothing here is implemented; it is recorded so the
+*Investigation, 2026-07. **Blockers 1 and 2 are now shipped** (`SpecError`,
+`src/diagnostics.jl`) — see "What shipped" below. The rest is recorded so the
 next person to want a spec linter, an LSP server, or an LLM that writes specs
 does not re-derive which parts are ready and which are the actual blockers.*
 
@@ -368,48 +369,164 @@ Four properties, none of them accidental:
 * **Signature checking is already static.** `check_arity`/`check_kwargs` moved
   two MethodError classes to parse time (see above).
 
-### The one structural blocker
+### What shipped: `SpecError` (blockers 1 and 2)
 
-**Every diagnostic is an `ErrorException` carrying a single `:msg` string.**
-The messages are excellent *prose* and unusable *data*. The tell is that the
-reference host already regexes our English — TermWin's `_strip_spec_prefix`
-exists to undo our own prefixes.
+The problem was that **every diagnostic was an `ErrorException` carrying a
+single `:msg` string** — excellent *prose*, unusable *data*. The tell was that
+the reference host regexed our English (TermWin's `_strip_spec_prefix`). Worse,
+**the fix was computed and then discarded**: `nearest` returned a repaired
+`Symbol` and `didyoumean` formatted it into a sentence and threw the Symbol
+away.
 
-A machine consumer needs `(severity, code, span, message, fix)` and can get one
-of the five. Worse, **the fix is computed and then discarded**: `nearest`
-returns a repaired `Symbol`, `didyoumean` formats it into a sentence and throws
-the Symbol away; `ForeignSpellings` holds 53 ready-made quick-fixes as prose
-values and is internal.
+`src/diagnostics.jl` adds `SpecError <: Exception` with `msg`, `code`, `token`,
+`fix` and `spec`. The governing constraint was that **the human contract does
+not move**: `showerror` prints `msg` verbatim, and switching a site from
+`error` to `specerror` is invisible in output. That was verified rather than
+asserted — a 50-case corpus of rejections was rendered against `HEAD` in a
+detached worktree and diffed against the converted tree: byte-for-byte
+identical. Re-run that check after any future conversion.
 
-The non-invasive shape is a `SpecDiagnostic` struct whose `showerror` renders
-today's exact wording. Every one of the ~114 call sites keeps its message;
-consumers gain a code and a fix. **No rule in G1–G8 changes** — this is
-strictly additive, and specifically it is *not* licence to make messages
-terser: the prose is the human contract, the struct is the machine one.
+Four properties worth preserving:
 
-Two smaller notes on the same axis:
+* **`fix` is a drop-in or it is absent.** It is set only when substituting it
+  for `token` yields a valid spec — the quick-fix channel, where a wrong answer
+  is worse than none (G3). The foreign-spelling table therefore contributes
+  `code` and `token` but **no `fix`**: its values are prose completing "Use ___
+  instead", and deriving a token from prose is exactly the guessing G3 forbids.
+  A test pins the drop-in property by actually substituting and re-parsing.
+* **One repair computation, two currencies.** `repair(tok, candidates)` returns
+  `(hint, fix)` — the message fragment and the same answer as data. `didyoumean`
+  is now its hint half. A message naming a repair the machine channel does not
+  offer would be the same class of incoherence as G5.
+* **Classification is additive, never a prerequisite.** `with_spec_context` is
+  the choke point: whatever a helper throws — a classified `SpecError`, or a
+  plain `ErrorException` from an unconverted site — leaves
+  `parseaggr`/`parsedim` as a `SpecError` tagged with the spec source. An
+  unclassified site still yields a usable diagnostic (`code = :invalid_spec`),
+  so adding a code later is a one-line change with no coordination cost.
+* **The scope line is "user spec" vs "host bug".** A diagnostic about
+  user-supplied spec text or its column/order references is a `SpecError`;
+  developer-facing API misuse (a bad `kind`, a malformed `AggrHints` key,
+  `registerop!` name rules, a verb's own argument validation) stays an
+  `ErrorException`. This is not cosmetic — it is what lets a consumer catch
+  `SpecError` and know it has something to report *against a user's spec*
+  rather than a bug in its own calling code. The line was validated by the
+  conversion: of 42 `@test_throws ErrorException` assertions, exactly the 11 on
+  the spec path changed, and the other 31 stayed put.
 
-* **Spans are free.** Verified: `Base.JuliaSyntax.parseall(SyntaxNode, src)`
-  yields `first_byte`/`last_byte` per token with no new dependency (`maen` in
-  `"sum(_ * wt) / maen(wt)"` reports bytes 15:18). `parse_detail` already
-  reaches into `ParseError`, so this is a swap of `Meta.parse`, not new
-  infrastructure.
+**No rule in G1–G8 changed.** Specifically, this is *not* licence to make
+messages terser now that a code exists: the prose is the human contract, the
+struct is the machine one, and G1 still governs the first.
+
+### Source spans (blocker 4, shipped)
+
+`SpecError.span` is the **byte** range of the offending text within `spec`, so
+`e.spec[e.span]` is what to underline and `span` + `fix` together are a
+quick-fix edit. Byte ranges are what Julia string indexing wants; an LSP host
+converts to UTF-16 offsets itself.
+
+Three decisions, in descending order of how much they mattered:
+
+1. **Derived at the choke point, not threaded through the sites.** The span is
+   computed in `with_spec_context` (and in `checkcols`, which runs outside it)
+   by locating `token` in the source. That is the same trick `spec` uses, and
+   the payoff is that **not one of the ~40 error sites had to learn about byte
+   offsets** — a site that sets `token` gets a highlight for free. It also
+   rewards having classified `token` correctly, which the previous round did.
+2. **A hand-rolled lexer, not `Base.JuliaSyntax`.** Spans are reachable from
+   the stdlib, but only through an *internal* API — during this work
+   `first_byte(::Token)` turned out to be broken while `Token.range` was fine,
+   which is exactly the instability to avoid depending on. The scanner in
+   `diagnostics.jl` is ~60 lines and the blast radius of it disagreeing with
+   Julia's real lexer is **cosmetic**: the parse is still `Meta.parse`, so a
+   discrepancy costs a wrong or missing highlight, never a wrong verdict.
+   Advisory precision buys stability. The one place Base *is* consulted is the
+   `:parse` code, where `ParseError` already carries its own diagnostic ranges
+   — wrapped in a `try` and degrading to `nothing`.
+3. **The span is whatever `fix` replaces.** This is subtler than "highlight the
+   token" and is what makes the quick-fix channel actually work.
+   `cumsum(:qty)` spans `:qty` **including the colon**, because substituting
+   `qty` for `qty` would repair nothing — the colon is the mistake. But
+   `orderby(d => :dsc)` spans just `dsc`, because `desc` goes *after* the colon
+   there. Two codes (`:symbol_literal`, `:groupby_literal`) opt into the
+   quoted form; the rest take the bare identifier. A test applies every
+   advertised fix at its span and re-parses the result.
+
+Coverage is 21 of 23 diagnostic classes. The two without a span are the empty
+spec (nothing to point at) and a qualified name like `Core.eval(Main, x)`,
+whose offending "token" is not one — both correctly `nothing` rather than
+guessed.
+
+### The one note that did not become work
+
 * **Do not build error recovery.** LSP convention wants all diagnostics per
   parse, but specs are one-liners and independent: a file of 50 specs yields 50
   diagnostics regardless. First-error-per-spec is the right cost/benefit here.
 
-### The registry metadata gap
+### Operator shape (blocker 3, shipped)
 
-The valuable *semantic* lints need one fact the registry does not record: an
-operator's **shape** — vector→scalar (`mean`, `sum`), vector→vector (`cumsum`,
-`rank`), or classifier (`topnames`).
+The registry used to record only `name => callable`, so nothing knew whether an
+operator collapsed its input or preserved it. That is exactly why
+`mean(m) |> groupby(c)` shipped in this package's own templates and only died
+at runtime.
 
-This is not hypothetical. It is exactly why `mean(m) |> groupby(c)` shipped in
-this package's own templates and only died at runtime: a reducer under
-`groupby` is *statically* wrong (a pivot dim must return one label per group),
-and nothing in the package can currently say so. A `shape` tag at registration
-would make that a parse-time rejection, catch the same class in user specs, and
-let `spec_templates` stop hand-curating which verbs are pivot-safe.
+`SafeOpShapes` now records, per operator, how many values it returns **relative
+to its input rows** — a cardinality axis, deliberately not a Julia-type one:
+
+| Shape | Meaning | Examples |
+|---|---|---|
+| `:reduce` | whole vector → one value | `sum`, `mean`, `uniqvalue`, `unionall` |
+| `:map` | one value per row | `cumsum`, `rank`, `lag`, `discretize` |
+| `:elementwise` | follows its arguments | `+`, `==`, `abs`, `coalesce`, `where` |
+| `:filter` | many values, not row-aligned | `skipmissing` |
+| `:unknown` | undeclared — checks stay silent | any host verb that has not opted in |
+
+Four decisions carried the design:
+
+1. **Cardinality, not type.** `unionall` returns a `Vector` and is a `:reduce`
+   (one answer per group); `extrema` returns a Tuple and is likewise `:reduce`.
+   The question is never "what Julia type comes back" but "how many answers
+   relative to the rows that went in".
+2. **`where` is `:elementwise`, not `:map`.** This was found by probing rather
+   than assumed: `where(true)` returns a `String` and `where([true,false])` a
+   labelled vector, and `aggr"where(sum(_) > 100)"` (label the *group* by its
+   total) works end to end. Getting this right is load-bearing twice over — it
+   keeps five legitimate aggregation specs legal, *and* it is what makes the
+   pivot check catch `where(any(flag)) |> groupby(g)`, the second template bug.
+3. **Shape composes; it is inferred, not looked up.** `sum(_ * wt) / sum(wt)`
+   and `sales / sum(sales)` are both divisions and only the first reduces. Only
+   propagating through the tree tells them apart, so `shape_of` is a small
+   recursive inference with `:unknown` **absorbing** — one undeclared verb
+   anywhere silences every check, the same bail-out `check_kwargs` makes on a
+   `kwargs...` method.
+4. **Undeclared is the default.** `registerop!` takes `shape = :unknown` unless
+   a host opts in, on the standing principle that a check which is confidently
+   wrong is worse than one that is absent.
+
+Two checks follow, plus a third that falls out for free:
+
+* an **aggregation** spec may not be row-wise or a loose collection
+  (`aggr"cumsum(_)"`, `aggr"skipmissing(_)"`);
+* a **`groupby` dimension** must give one label per group, not collapse them —
+  and the message blames the *reduction* (`reducing_culprit`), not the innocent
+  top-level verb, since that is the token the user has to edit;
+* a `:map` verb handed nothing but scalars has **nothing to map over**
+  (`cumsum(sum(x))`), decidable because every `:map` verb rejects a scalar.
+
+**Ordering matters as much as the checks.** Shape is verified *after*
+`compile_node`, because a whole-spec verdict is less specific than a per-node
+one: `cumsum(:qty)` must be told about the colon, not that it computes one
+value per row. That is the same most-specific-first ladder rule as
+`unknown_op_error`, and getting it backwards was caught by the existing
+error-quality tests.
+
+A drift guard (`"every shipped operator declares a shape"`) joins the docs and
+per-operator-test guards: a shipped operator with no shape would silently
+switch the checks off for every spec that mentions it.
+
+**What it does not catch**, recorded so the boundary is clear: shape is per
+name, not per arity, so `first(v)` and the exotic `first(v, 3)` share one label;
+and type errors inside a correctly-shaped spec remain the engine's business.
 
 ### Copilot uses that need no new code
 
@@ -451,15 +568,28 @@ data**, which is a good argument for building one even if nobody lints.
 
 ### Ranked blockers
 
-| # | Blocker | Cost | Unblocks |
+| # | Blocker | Status | Unblocks |
 |---|---|---|---|
-| 1 | String-only diagnostics | Moderate — one struct + `showerror`, wording unchanged | Everything programmatic |
-| 2 | `didyoumean` discards the repair candidate | Trivial — return it alongside | Quick-fixes, auto-apply |
-| 3 | No operator shape metadata | Moderate — a tag at registration | The high-value semantic lints |
-| 4 | No source spans | Small — `Meta.parse` → `JuliaSyntax`, verified free | Squiggles, inline fixes |
-| 5 | Method-table checks are session-dependent | Small — expose a registry fingerprint | Reproducible CI (a lint that passes with StatsBase loaded and fails without it) |
-| 6 | Repair/vocabulary internals unexported (`nearest`, `didyoumean`, `ForeignSpellings`, `registry_summary`) | Trivial | Consumers not reaching into internals |
+| 1 | String-only diagnostics | **Shipped** — `SpecError`, messages verified unchanged | Everything programmatic |
+| 2 | `didyoumean` discards the repair candidate | **Shipped** — `repair` returns `(hint, fix)` | Quick-fixes, auto-apply |
+| 3 | No operator shape metadata | **Shipped** — `SafeOpShapes` + `shape_of` inference | The high-value semantic lints |
+| 4 | No source spans | **Shipped** — `SpecError.span`, byte range into `spec` | Squiggles, inline fixes |
+| 5 | Method-table checks are session-dependent | Open — expose a registry fingerprint | Reproducible CI (a lint that passes with StatsBase loaded and fails without it) |
+| 6 | Repair/vocabulary internals unexported (`nearest`, `didyoumean`, `ForeignSpellings`, `registry_summary`) | Open — but much less pressing now that `code`/`fix` are on the diagnostic | Consumers not reaching into internals |
 
-Blockers 1 and 2 together are the whole game: they turn an excellent
-human-facing error system into a machine-facing one **without changing a single
-message**. Everything else is additive on top.
+Blockers 1 and 2 were the whole game: they turned an excellent human-facing
+error system into a machine-facing one **without changing a single message**.
+A consumer can now catch `SpecError`, branch on `code`, apply `fix` at `span`,
+and report against `spec` — enough for a quick-fix provider, an agent repair
+loop, an LSP diagnostic, or a CI check, with no regex over prose anywhere.
+
+Blocker 3 has since shipped too (see *Operator shape* above): both template
+bugs that motivated it — `mean(m) |> groupby(c)` and `where(any(b)) |>
+groupby(c)` — are now parse-time rejections rather than runtime failures, and
+the invalid pivot pattern turned out to have spread into four test assertions
+here and into TermWin's own docstring and test, all corrected in the same pass.
+
+The remaining semantic lints listed above (`first(_)` without `orderby`,
+`count(_ > 0)` on a missing-capable column) need no further metadata — they are
+now a matter of deciding on a *warning* severity, which `SpecError` does not yet
+carry because nothing in the package has ever needed one.

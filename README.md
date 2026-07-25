@@ -472,6 +472,27 @@ parseaggr(usertext; columns = propertynames(df))   # sum(qtty) — did you mean 
 sources, dimension inputs), so misspelled columns fail with a suggestion
 instead of a bare DataFrames indexing error.
 
+Every one of these rejections is a `SpecError`, which carries the same
+information as **data** beside the prose — for a linter, an editor, or an agent
+repairing its own output:
+
+```julia
+e = try parseaggr("sum(qtty)"; columns = propertynames(df)) catch e; e end
+e.code            # :unknown_column
+e.token           # :qtty
+e.fix             # :qty        — a drop-in replacement, or `nothing`
+e.spec[e.span]    # "qtty"      — byte range of the offending text
+```
+
+`sprint(showerror, e)` prints exactly the message shown above, so text-only
+consumers need not care. `fix` is set only when substituting it at `span`
+yields a valid spec, so a quick-fix can be applied without re-checking;
+redirects whose answer is a restructure (the SQL/pandas spellings, the modifier
+reminders) leave it `nothing` and put the advice in the message. Programmer
+errors — a bad `kind` argument, a malformed `AggrHints` key — stay ordinary
+`ErrorException`s, so catching `SpecError` means "something to report against a
+user's spec".
+
 The rejections above are only half of it. `spec_templates(kind; coltypes,
 target, targetdata)` proposes whole starter specs *before* the user types,
 narrowed by the target column's type, the frame's other columns, and the values
@@ -502,6 +523,41 @@ aggr"mean(_, Weights(EnrlTot))"                # mean is already registered;
 registerop!(:tophalf, (name, measure) -> ...)
 registerclassifier!(:tophalf, 1)               # dim"tophalf(District, TestScr)"
 ```
+
+#### Declaring an operator's shape
+
+`shape` tells the parser how many values an operator returns *relative to its
+input rows*, which is what lets whole classes of mistake be caught before the
+engine runs:
+
+| `shape` | Meaning | Shipped examples |
+|---|---|---|
+| `:reduce` | whole vector → **one** value | `sum`, `mean`, `uniqvalue`, `unionall` |
+| `:map` | one value **per row** | `cumsum`, `rank`, `lag`, `discretize` |
+| `:elementwise` | follows its arguments | `+`, `==`, `abs`, `coalesce`, `where` |
+| `:filter` | many values, **not** row-aligned | `skipmissing` |
+
+```julia
+registerop!(:movmean, movmean; shape = :map)
+```
+
+Shape composes, so it is inferred for a whole spec rather than read off the top
+name: `sum(_ * wt) / sum(wt)` reduces (both operands do) while `sales /
+sum(sales)` does not, though both are a division. Two checks follow — an
+aggregation spec must reduce to one value, and a `|> groupby(...)` dimension
+must produce one label *per group* rather than collapse them:
+
+```julia
+aggr"cumsum(_)"                  # ✗ computes one value per ROW
+dim"mean(sales) |> groupby(region)"
+# ✗ a groupby dimension LABELS each group, so it must give one value per
+#   group, but 'mean' reduces them to a single value. Classify the groups
+#   instead — rank/denserank, quantiles, discretize, topnames, …
+```
+
+Declaring a shape is **optional**: an operator that omits it is `:unknown`, and
+the checks stay silent for any spec mentioning it rather than guess — the same
+bail-out `check_arity`/`check_kwargs` make. `opshape(name)` reports it.
 
 ### Trusted Expr specs (advanced)
 

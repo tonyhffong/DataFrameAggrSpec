@@ -45,8 +45,11 @@ function normalize_measures(
             error("agg cols: entries must be a column Symbol, `col => spec`, or " *
                   "`col => spec => outname`, got " * string(entry))
         end
-        hasproperty(df, src) || error("agg cols: no column " * string(src) *
-                                      didyoumean(src, sort(propertynames(df))))
+        if !hasproperty(df, src)
+            r = repair(src, sort(propertynames(df)))
+            specerror("agg cols: no column " * string(src) * r.hint;
+                      code = :unknown_column, token = src, fix = r.fix)
+        end
         spec === nothing && (spec = resolveaggr(hints, src, eltype(df[!, src])))
         out in keycols && error(
             "agg cols: output name " * string(out) * " collides with a chain key")
@@ -75,16 +78,22 @@ function agg(
         df = applydims!(copyframe(df), dims; hints = hints)
     end
     for k in keycols   # fail here, not deep inside groupby
-        hasproperty(df, k) || error("agg: no key column " * string(k) *
-                                    didyoumean(k, sort(propertynames(df))))
+        if !hasproperty(df, k)
+            r = repair(k, sort(propertynames(df)))
+            specerror("agg: no key column " * string(k) * r.hint;
+                      code = :unknown_column, token = k, fix = r.fix)
+        end
     end
     if allbut === nothing
         entries = cols === nothing ? setdiff(propertynames(df), keycols) : cols
     else
         ab = tosyms(allbut)
         for c in ab
-            hasproperty(df, c) || error("agg: allbut column " * string(c) *
-                " does not exist" * didyoumean(c, sort(propertynames(df))))
+            if !hasproperty(df, c)
+                r = repair(c, sort(propertynames(df)))
+                specerror("agg: allbut column " * string(c) * " does not exist" *
+                          r.hint; code = :unknown_column, token = c, fix = r.fix)
+            end
             in(c, keycols) && error("agg: allbut excludes measures, but " *
                 string(c) * " is a chain key -- remove it from the chain instead")
         end

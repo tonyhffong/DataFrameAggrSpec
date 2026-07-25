@@ -154,7 +154,7 @@ end
     catch e
         e
     end
-    @test err isa ErrorException && occursin("did you mean 'qty'?", err.msg)
+    @test err isa Exception && occursin("did you mean 'qty'?", sprint(showerror, err))
     @test_throws ErrorException agg(df, :region; allbut = [:region])
 end
 
@@ -245,7 +245,7 @@ end
         cols = [:qty => :sum => :x, :score => :sum => :x])     # duplicate output
     @test_throws ErrorException agg(df, :region;
         cols = [:qty => :sum => :region])                      # collides with key
-    @test_throws ErrorException agg(df, :region;
+    @test_throws SpecError agg(df, :region;
         cols = [:nope => :sum => :x])                          # unknown source
     @test_throws ErrorException agg(df, :region;
         cols = ["score" => :sum])                              # non-Symbol source

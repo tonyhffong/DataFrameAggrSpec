@@ -57,10 +57,10 @@ import DataFrameAggrSpec: WindowDim, PivotDim, dependencies   # internals, white
 
     # THE trust rule: plain Strings are untrusted everywhere in the new API,
     # so hostile user input cannot reach eval through any of these doors
-    @test_throws ErrorException dim(df, [:County, :evil => "Core.eval(Main, :(run(`ls`)))"])
-    @test_throws ErrorException WindowDim(:evil, "open(\"/etc/passwd\")")
-    @test_throws ErrorException AggrHints(:TestScr => "Base.exit()")
-    @test_throws ErrorException liftAggrSpecToFunc(:TestScr, "run(`ls`)")
+    @test_throws SpecError dim(df, [:County, :evil => "Core.eval(Main, :(run(`ls`)))"])
+    @test_throws SpecError WindowDim(:evil, "open(\"/etc/passwd\")")
+    @test_throws SpecError AggrHints(:TestScr => "Base.exit()")
+    @test_throws SpecError liftAggrSpecToFunc(:TestScr, "run(`ls`)")
 
     # String specs still work -- through the safe grammar (bare identifiers)
     ws = WindowDim(:t, "sum(TestScr)")

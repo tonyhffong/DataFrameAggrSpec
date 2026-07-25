@@ -24,9 +24,10 @@ function orderentry(p::Pair{Symbol,Symbol})
     elseif p.second == :desc
         p.first => true
     else
-        error("order direction must be :asc or :desc, got '" *
-              string(p.second) * "' (on column '" * string(p.first) * "')" *
-              didyoumean(p.second, [:asc, :desc]))
+        r = repair(p.second, [:asc, :desc])
+        specerror("order direction must be :asc or :desc, got '" *
+                  string(p.second) * "' (on column '" * string(p.first) * "')" *
+                  r.hint; code = :order_entry, token = p.second, fix = r.fix)
     end
 end
 orderentry(s::AbstractString) = orderentry_parsed(Meta.parse(s))
@@ -42,12 +43,13 @@ function orderentry_parsed(ex)
         # and would silently sort by a phantom `desc` column (or fail much
         # later, at the frame). The direction belongs to its column.
         if s === :asc || s === :desc
-            error("'" * string(s) * "' is a sort direction, not a column -- " *
-                  "attach it to the column it sorts: orderby(col => :" *
-                  string(s) * ")" *
-                  (s === :asc ? " (ascending is already the default)" : "") *
-                  ". If '" * string(s) * "' really is a column name, spell the " *
-                  "direction too: " * string(s) * " => :asc")
+            specerror("'" * string(s) * "' is a sort direction, not a column -- " *
+                      "attach it to the column it sorts: orderby(col => :" *
+                      string(s) * ")" *
+                      (s === :asc ? " (ascending is already the default)" : "") *
+                      ". If '" * string(s) * "' really is a column name, spell the " *
+                      "direction too: " * string(s) * " => :asc";
+                      code = :order_entry, token = s)
         end
         return s => false
     elseif Base.Meta.isexpr(ex, :call, 3) && ex.args[1] == :(=>)
@@ -454,9 +456,12 @@ function applydims!(
 )
     for d in dims
         for c in required_columns(d)
-            hasproperty(df, c) || error(
-                "dimension " * string(d.name) * ": no column " * string(c) *
-                didyoumean(c, sort(propertynames(df))))
+            if !hasproperty(df, c)
+                r = repair(c, sort(propertynames(df)))
+                specerror("dimension " * string(d.name) * ": no column " *
+                          string(c) * r.hint;
+                          code = :unknown_column, token = c, fix = r.fix)
+            end
         end
         apply_dimension!(df, d; hints = hints, replace = replace)
     end

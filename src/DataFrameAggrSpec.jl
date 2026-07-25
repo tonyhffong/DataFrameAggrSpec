@@ -51,6 +51,7 @@ using Base.Meta
 
 include("exprsubst.jl")   # spec-expression substitution machinery + guards
 include("suggest.jl")     # OSA "did you mean" helpers for user-facing errors
+include("diagnostics.jl") # SpecError: the machine channel beside the message
 include("aggrspec.jl")    # aggregation-spec compiler (liftAggrSpecToFunc) + AggrHints
 include("verbs.jl")       # discretize / topnames / uniqvalue / unionall / lag / lead / rank
 include("safe.jl")        # UNTRUSTED whitelist DSL: aggr"..." / dim"..." (needs verbs;
@@ -66,7 +67,14 @@ include("templates.jl")   # PROACTIVE suggestion: starter templates + completion
 export liftAggrSpecToFunc, defaultAggr
 # Untrusted whitelist DSL
 export SafeAggrSpec, SafeDimSpec, parseaggr, parsedim, @aggr_str, @dim_str
-export registerop!, registerclassifier!, listops, checkcols
+export registerop!, registerclassifier!, listops, checkcols, opshape
+# Structured diagnostics: the machine channel beside the human message. Every
+# rejection of user-supplied spec text is a SpecError carrying a code, the
+# offending token and (when one exists) a drop-in fix -- for linters, LSP
+# servers and agents repairing their own output. Host-code mistakes (a bad
+# `kind`, a malformed AggrHints key, registerop! name rules) stay plain
+# ErrorExceptions. See design/user-guidance.md.
+export SpecError
 # Spec suggestion: proactive (templates / completion vocabulary, templates.jl)
 # and the structural rendition of a parsed spec a host echoes back. The
 # after-the-fact half (did-you-mean) reaches users through parser errors.

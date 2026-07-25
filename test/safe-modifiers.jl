@@ -40,7 +40,7 @@ smdf() = DataFrame(
     @test g1.by == [:District]
     @test g2.by == [:District, :County]
     @test g1.fname == :discretize && g1.cols == [:EnrlTot]
-    @test dim"mean(TestScr) |> groupby(District, County)".by == [:District, :County]
+    @test dim"rank(TestScr) |> groupby(District, County)".by == [:District, :County]
 
     # groupby accepts COMPUTED keys too, exactly like the nested composite-
     # aggregation groupby (compile_grouped) already did -- finding #3
@@ -54,7 +54,7 @@ smdf() = DataFrame(
     @test gmix.by[2] isa DataFrameAggrSpec.GroupByKey && gmix.by[2].cols == [:date]
     # the [ ... ] array spelling stays symbol-only -- mixing an expression in
     # errors with a redirect rather than silently doing something surprising
-    @test_throws ErrorException dim"cumsum(sales) |> groupby([yyyymm(date)])"
+    @test_throws SpecError dim"cumsum(sales) |> groupby([yyyymm(date)])"
 
     # both modifiers parse together (groupby -> pivot kind, orderby -> group
     # ordering; textual order is non-semantic, see design/compound-modifiers.md)
@@ -68,7 +68,7 @@ smdf() = DataFrame(
         catch e
             e
         end
-        err isa ErrorException && occursin(needle, err.msg)
+        err isa Exception && occursin(needle, sprint(showerror, err))
     end
     @test modreject(parsedim, "cumsum(sales) |> orderby(date) |> orderby(x)",
                     "duplicate orderby")
@@ -200,7 +200,7 @@ end
 
     # columns referenced only via orderby are validated too (checkcols)
     @test checkcols(aggr"first(_) |> orderby(date)", [:sales, :date]) isa SafeAggrSpec
-    @test_throws ErrorException checkcols(aggr"first(_) |> orderby(dat)", [:sales, :date])
+    @test_throws SpecError checkcols(aggr"first(_) |> orderby(dat)", [:sales, :date])
 
     # composing top-level orderby with a NESTED composite groupby reduction:
     # orderby pre-sorts the WHOLE group, which decides row order WITHIN each

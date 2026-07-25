@@ -296,7 +296,7 @@ end
     # the old 3rd-argument form is gone, and the parser says so directly:
     # arity is checked against the verb's method table at parse time, so this
     # no longer waits to become a MethodError inside the kernel
-    @test_throws ErrorException dim"quantiles(TestScr, [.5], [District])"
+    @test_throws SpecError dim"quantiles(TestScr, [.5], [District])"
     err = try
         parsedim("quantiles(TestScr, [.5], [District])")
     catch e
@@ -425,8 +425,8 @@ end
                                "TestScr > 35", "Not TestScr > 35"]
 
     # arity and label validation
-    @test_throws ErrorException parsedim("where()")
-    @test_throws ErrorException parsedim("where(a > 1, b > 1)")
+    @test_throws SpecError parsedim("where()")
+    @test_throws SpecError parsedim("where(a > 1, b > 1)")
     @test_throws ErrorException dim"where(x > 1, true_label = \"a\", false_label = \"a\")".f([2])
 end
 

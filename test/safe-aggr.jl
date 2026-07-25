@@ -177,7 +177,7 @@ end
     s = aggr"mean(sum(_) |> groupby(year))"
     @test s.cols == [:_, :year]                       # source order
     @test checkcols(s, [:pop, :year]) === s
-    @test_throws ErrorException checkcols(s, [:pop])  # year missing
+    @test_throws SpecError checkcols(s, [:pop])  # year missing
 
     # mixed key types cannot sort: a curated error, not a raw MethodError
     err = try
@@ -186,7 +186,7 @@ end
     catch e
         e
     end
-    @test err isa ErrorException && occursin("mutually comparable", err.msg)
+    @test err isa Exception && occursin("mutually comparable", sprint(showerror, err))
 end
 
 @testset "wmeanfallback" begin

@@ -45,8 +45,60 @@ const SafeOps = Dict{Symbol,Base.Callable}()   # Callable: constructors (Weights
 # never called -- reserve their names so a host cannot shadow them.
 const SafeModifiers = (:orderby, :groupby)
 
+# ---- operator SHAPE ---------------------------------------------------------
+# How many values an operator returns RELATIVE TO ITS INPUT ROWS. This is a
+# cardinality axis, not a Julia-type axis: `unionall` returns a Vector and is
+# still a :reduce (one answer for the whole group), while `where` returns a
+# String for a scalar condition and a vector for a vector one, so it is
+# :elementwise.
+#
+#   :reduce       whole vector -> ONE value            sum, mean, uniqvalue, unionall
+#   :map          one value per input row              cumsum, rank, lag, discretize
+#   :elementwise  follows its arguments (scalar in,    +, ==, abs, coalesce, where
+#                 scalar out; vector in, vector out)
+#   :filter       many values, NOT row-aligned         skipmissing
+#   :unknown      not declared -- inference gives up, and every shape check
+#                 SKIPS rather than guessing
+#
+# `:unknown` is the default for `registerop!`, on the same principle as
+# check_arity/check_kwargs: a guidance check that is confidently wrong is worse
+# than one that is absent, because the user cannot appeal it. A host that wants
+# its verb shape-checked opts in by declaring one.
+#
+# Known imprecision, recorded rather than engineered around: shape is per NAME,
+# not per arity, so `first(v)` (:reduce, correct) and the exotic `first(v, 3)`
+# (really a map) share one label. Nothing in the shipped grammar reaches the
+# second form, and arity-dependent shapes would cost far more than they buy.
+const SafeOpShapes = Dict{Symbol,Symbol}()
+
+const OpShapeKinds = (:reduce, :map, :elementwise, :filter, :unknown)
+
+"""
+    opshape(name::Symbol) -> Symbol
+
+How many values the registered operator `name` returns relative to its input
+rows: `:reduce` (one per group), `:map` (one per row), `:elementwise` (follows
+its arguments), `:filter` (many, not row-aligned), or `:unknown` when the
+operator has not declared one — including every name that is not registered.
+
+Drives the parse-time shape checks (an aggregation must reduce to one value; a
+`groupby` dimension must produce one label per group) and is exposed for linters
+and hosts. See `design/user-guidance.md`.
+"""
+opshape(name::Symbol) = get(SafeOpShapes, name, :unknown)
+
+# single registration point, so SafeOps and SafeOpShapes cannot drift apart
+function _register!(name::Symbol, f::Base.Callable, shape::Symbol)
+    in(shape, OpShapeKinds) || error(
+        "registerop!: shape must be one of " * join(OpShapeKinds, ", ") *
+        ", got '" * string(shape) * "'" * didyoumean(shape, OpShapeKinds))
+    SafeOps[name] = f
+    shape === :unknown ? delete!(SafeOpShapes, name) : (SafeOpShapes[name] = shape)
+    f
+end
+
 # extension is a trusted act done in host code, never via spec strings
-function registerop!(name::Symbol, f::Base.Callable)
+function registerop!(name::Symbol, f::Base.Callable; shape::Symbol = :unknown)
     s = string(name)
     if occursin(".", s) || occursin("!", s)
         error("registerop!: operator names may not contain '.' or '!', got '" * s *
@@ -55,7 +107,7 @@ function registerop!(name::Symbol, f::Base.Callable)
     if in(name, SafeModifiers)
         error("registerop!: '" * s * "' is a reserved modifier name")
     end
-    SafeOps[name] = f
+    _register!(name, f, shape)
 end
 
 listops() = sort!(collect(keys(SafeOps)))
@@ -64,22 +116,41 @@ listops() = sort!(collect(keys(SafeOps)))
 bcast(f) = (args...; kwargs...) -> Base.broadcast((a...) -> f(a...; kwargs...), args...)
 
 # ---- default registry -------------------------------------------------------
-for f in (
-    # reductions (whole-vector)
-    sum, prod, mean, median, std, var, quantile, minimum, maximum, extrema,
-    length, count, first, last, skipmissing, any, all,
-    # package verbs
-    uniqvalue, countuniq, unionall, strjoinuniq, topnames, discretize, quantiles, lag, lead, where,
-    wmeanfallback,
-    # vector transforms
-    cumsum, cumprod, rank, denserank, ordinalrank, tiedrank,
-)
-    SafeOps[Symbol(f)] = f
+# Grouped by SHAPE (see above), which makes the registry self-documenting about
+# what each verb does to cardinality -- and makes "did I put this in the right
+# group" the review question when an operator is added.
+
+# :reduce -- whole vector in, ONE value out. `unionall` and `extrema` return
+# containers and still belong here: one answer per group is the criterion.
+for f in (sum, prod, mean, median, std, var, quantile, minimum, maximum, extrema,
+          length, count, first, last, any, all,
+          uniqvalue, countuniq, unionall, strjoinuniq, wmeanfallback)
+    _register!(Symbol(f), f, :reduce)
 end
+
+# :map -- one value per input ROW. These genuinely need the vector (each
+# rejects a scalar argument outright), which is what makes the "nothing to map
+# over" check below decidable.
+for f in (topnames, discretize, quantiles, lag, lead,
+          cumsum, cumprod, rank, denserank, ordinalrank, tiedrank)
+    _register!(Symbol(f), f, :map)
+end
+
+# :filter -- many values out, but NOT one per input row, so it is neither a
+# reduction nor row-aligned. Only skipmissing; it exists to feed a reducer.
+_register!(:skipmissing, skipmissing, :filter)
+
+# `where` is :elementwise, NOT :map -- it broadcasts over its condition, so it
+# returns a String for a scalar condition and a labelled vector for a vector
+# one. That is what makes aggr"where(sum(_) > 100)" (label the GROUP by its
+# total) and dim"where(sales > 12)" (label each ROW) both legal and correctly
+# distinguished, and what lets the pivot check catch a scalar condition under
+# `groupby`.
+_register!(:where, where, :elementwise)
 
 # nrow: DataFrames.jl-flavored alias for length -- group row count without
 # reaching for `count`, whose Base semantics (number of trues) are unrelated
-SafeOps[:nrow] = length
+_register!(:nrow, length, :reduce)
 
 # scalar functions apply elementwise to columns. ismissing/coalesce are the
 # row-level missing tools (flag / replace -- skipmissing covers drop); they
@@ -87,12 +158,12 @@ SafeOps[:nrow] = length
 # Julia, so specs keep the same vocabulary across the trust boundary.
 for f in (abs, log, log2, log10, exp, sqrt, round, floor, ceil, min, max,
           ismissing, coalesce)
-    SafeOps[Symbol(f)] = bcast(f)
+    _register!(Symbol(f), bcast(f), :elementwise)
 end
 
 # date-bucketing labels (verbs.jl): scalar verbs, elementwise over columns
 for f in (yyyy, yyyyq, yyq, yyyymm, yymm)
-    SafeOps[Symbol(f)] = bcast(f)
+    _register!(Symbol(f), bcast(f), :elementwise)
 end
 
 # operators: undotted and dotted spellings bind to the same broadcasting closure
@@ -103,8 +174,8 @@ for (name, f) in Any[
     (:≠, !=), (:≤, <=), (:≥, >=), (:!, !),
 ]
     b = bcast(f)
-    SafeOps[name] = b
-    SafeOps[Symbol("." * string(name))] = b
+    _register!(name, b, :elementwise)
+    _register!(Symbol("." * string(name)), b, :elementwise)
 end
 
 # `in`: SQL/dplyr-style membership, `x in [1, 2, 5]`. Julia lowers infix `in`
@@ -115,14 +186,14 @@ end
 # happen to match, a shape error otherwise). Ref-protect the collection so it
 # is compared as a WHOLE, once per item, whether it came from a literal
 # array or a column.
-SafeOps[:in] = (x, coll) -> Base.broadcast(in, x, Ref(coll))
+_register!(:in, (x, coll) -> Base.broadcast(in, x, Ref(coll)), :elementwise)
 
 # ∈ / ∉: Unicode spellings. `Base.:∈ === in` (the identical function, just a
 # second token the parser accepts -- unlike `≠`/`≤`/`≥`, which are distinct
 # functions wrapping the same closure), so this is a shared reference, not a
 # copy. `∉` is `in`'s negation and needs its own Ref-protected closure.
-SafeOps[:∈] = SafeOps[:in]
-SafeOps[:∉] = (x, coll) -> Base.broadcast(Base.:∉, x, Ref(coll))
+_register!(:∈, SafeOps[:in], :elementwise)
+_register!(:∉, (x, coll) -> Base.broadcast(Base.:∉, x, Ref(coll)), :elementwise)
 
 # snapshot of the shipped registry, before any host registerop! calls.
 # EVERY operator here must be documented in docs/safe-aggregation-operators.md
@@ -335,36 +406,46 @@ function unknown_op_error(what::String, fname::Symbol)
     # DataFrames muscle memory: .& / .| are spelled && / || in this grammar
     if in(fname, (Symbol("&"), Symbol("|"), Symbol(".&"), Symbol(".|")))
         c = in(fname, (Symbol("&"), Symbol(".&"))) ? "&&" : "||"
-        error(what * ": '" * string(fname) * "' is not an operator here -- " *
-              "combine conditions with '" * c * "' (pure elementwise over " *
-              "columns; binds looser than comparisons, so no parentheses " *
-              "needed: a > 1 " * c * " b < 2)")
+        specerror(what * ": '" * string(fname) * "' is not an operator here -- " *
+                  "combine conditions with '" * c * "' (pure elementwise over " *
+                  "columns; binds looser than comparisons, so no parentheses " *
+                  "needed: a > 1 " * c * " b < 2)";
+                  code = :boolean_operator, token = fname, fix = Symbol(c))
     end
-    in(fname, SafeModifiers) && error(what * ": " * modifier_reminder(fname))
+    in(fname, SafeModifiers) && specerror(what * ": " * modifier_reminder(fname);
+                                          code = :modifier_misuse, token = fname)
     sq = squash(fname)
     # `dense_rank`, `ROW_NUMBER`: the concept exists, the spelling does not
     # (operator names carry no underscores -- design/expressiveness.md)
     if sq !== fname && haskey(SafeOps, sq)
-        error(what * ": '" * string(fname) * "' is not registered -- write it " *
-              "as '" * string(sq) * "' (operator names are lowercase and carry " *
-              "no underscores).")
+        specerror(what * ": '" * string(fname) * "' is not registered -- write it " *
+                  "as '" * string(sq) * "' (operator names are lowercase and carry " *
+                  "no underscores).";
+                  code = :spelling_convention, token = fname, fix = sq)
     end
     if haskey(ForeignSpellings, sq)
-        error(what * ": '" * string(fname) * "' is not registered here -- use " *
-              ForeignSpellings[sq] * ". (listops() shows the whitelist; " *
-              "hosts can extend it with registerop!.)")
+        # no `fix`: the table's values complete "Use ___ instead" in prose
+        # ("nrow (the group's row count -- ...)"), so they are advice rather
+        # than a substitution. Deriving a token from prose is the kind of
+        # guessing G3 forbids.
+        specerror(what * ": '" * string(fname) * "' is not registered here -- use " *
+                  ForeignSpellings[sq] * ". (listops() shows the whitelist; " *
+                  "hosts can extend it with registerop!.)";
+                  code = :foreign_spelling, token = fname)
     end
     n = nearest(string(fname), vcat(listops(), collect(SafeModifiers)))
     if n isa Symbol && in(n, SafeModifiers)
-        error(what * ": unknown function '" * string(fname) * "'. " *
-              modifier_reminder(n))
+        specerror(what * ": unknown function '" * string(fname) * "'. " *
+                  modifier_reminder(n);
+                  code = :modifier_misuse, token = fname)
     elseif n !== nothing
-        error(what * ": unknown function '" * string(fname) *
-              "' -- did you mean '" * string(n) * "'? (listops() shows the " *
-              "whitelist; hosts can extend it with registerop!.)")
+        specerror(what * ": unknown function '" * string(fname) *
+                  "' -- did you mean '" * string(n) * "'? (listops() shows the " *
+                  "whitelist; hosts can extend it with registerop!.)";
+                  code = :unknown_op, token = fname, fix = n)
     end
-    error(what * ": unknown function '" * string(fname) * "'. " *
-          registry_summary())
+    specerror(what * ": unknown function '" * string(fname) * "'. " *
+              registry_summary(); code = :unknown_op, token = fname)
 end
 
 # a literal where a grouping key belongs. Both `groupby` paths (the nested
@@ -373,16 +454,20 @@ end
 # other DataFrames API wants `:col` or `"col"` -- get named as such instead of
 # being reported as "a literal".
 function groupby_literal_error(what::String, a)
+    # both quoting habits have a genuine drop-in fix: strip the colon/quotes
     if isa(a, QuoteNode) && isa(a.value, Symbol)
-        error(what * ": ':" * string(a.value) * "' is a Symbol literal -- a " *
-              "grouping key is a bare column name, written without the colon: " *
-              "groupby(" * string(a.value) * ")")
+        specerror(what * ": ':" * string(a.value) * "' is a Symbol literal -- a " *
+                  "grouping key is a bare column name, written without the colon: " *
+                  "groupby(" * string(a.value) * ")";
+                  code = :groupby_literal, token = a.value, fix = a.value)
     end
-    isa(a, AbstractString) && Base.isidentifier(a) && error(
+    isa(a, AbstractString) && Base.isidentifier(a) && specerror(
         what * ": " * repr(a) * " is a string literal -- a grouping key is a " *
-        "bare column name, written without the quotes: groupby(" * a * ")")
-    error(what * ": groupby keys must be columns (or elementwise transforms " *
-          "of columns, e.g. yyyy(t)), got the literal " * repr(a))
+        "bare column name, written without the quotes: groupby(" * a * ")";
+        code = :groupby_literal, token = Symbol(a), fix = Symbol(a))
+    specerror(what * ": groupby keys must be columns (or elementwise transforms " *
+              "of columns, e.g. yyyy(t)), got the literal " * repr(a);
+              code = :groupby_literal)
 end
 
 # would unknown_op_error have something concrete to say about this name, or
@@ -452,10 +537,11 @@ function check_arity(what::String, fname::Symbol, op, n::Int)
                          string(fname) * "(sales)'" :
                          " -- name the columns it works on"
     end
-    error(what * ": '" * string(fname) * "' takes " * expected *
-          (lo == 1 && hi == 1 ? " positional argument, got " :
-           " positional arguments, got ") * string(n) * hint *
-          ". (Options go in keyword form: f(x, opt = value).)")
+    specerror(what * ": '" * string(fname) * "' takes " * expected *
+              (lo == 1 && hi == 1 ? " positional argument, got " :
+               " positional arguments, got ") * string(n) * hint *
+              ". (Options go in keyword form: f(x, opt = value).)";
+              code = :arity, token = fname)
 end
 
 # the keyword names a registered function accepts, or `nothing` when it
@@ -478,12 +564,14 @@ function check_kwargs(what::String, fname::Symbol, op, kws::Vector{Symbol})
     accepted === nothing && return nothing
     for k in kws
         in(k, accepted) && continue
-        isempty(accepted) && error(
+        isempty(accepted) && specerror(
             what * ": '" * string(fname) * "' takes no keyword options, got '" *
-            string(k) * "'")
-        error(what * ": '" * string(fname) * "' has no keyword option '" *
-              string(k) * "'" * didyoumean(k, accepted) * ". Accepted: " *
-              join(accepted, ", "))
+            string(k) * "'"; code = :unknown_kwarg, token = k)
+        r = repair(k, accepted)
+        specerror(what * ": '" * string(fname) * "' has no keyword option '" *
+                  string(k) * "'" * r.hint * ". Accepted: " *
+                  join(accepted, ", ");
+                  code = :unknown_kwarg, token = k, fix = r.fix)
     end
     nothing
 end
@@ -522,11 +610,13 @@ function compile_node(ex, cols::Vector{Symbol}, what::String)
     elseif isa(ex, Expr) && ex.head == :call
         return compile_call(ex, cols, what)
     elseif isa(ex, Expr) && haskey(SafeRejections, ex.head)
-        error(what * ": " * SafeRejections[ex.head] * " (in \"" * string(ex) * "\")")
+        specerror(what * ": " * SafeRejections[ex.head] * " (in \"" * string(ex) * "\")";
+                  code = :unsupported_syntax, token = ex.head)
     else
-        error(what * ": unsupported syntax '" *
-              (isa(ex, Expr) ? string(ex.head) : string(typeof(ex))) *
-              "' in \"" * string(ex) * "\"")
+        specerror(what * ": unsupported syntax '" *
+                  (isa(ex, Expr) ? string(ex.head) : string(typeof(ex))) *
+                  "' in \"" * string(ex) * "\"";
+                  code = :unsupported_syntax)
     end
 end
 
@@ -540,14 +630,17 @@ function compile_call(ex::Expr, cols::Vector{Symbol}, what::String)
             # the user is told about registerop!, which is not their problem.
             m = length(fname.args) == 2 && isa(fname.args[2], QuoteNode) ?
                 fname.args[2].value : nothing
-            isa(m, Symbol) && in(m, SafeModifiers) && error(
+            isa(m, Symbol) && in(m, SafeModifiers) && specerror(
                 what * ": " * modifier_reminder(m) *
-                ". The separator is '|>' or '∘', never '.'")
-            error(what * ": qualified names like '" * string(fname) *
-                  "' are not allowed in untrusted specs; hosts can register the " *
-                  "function under a plain name with registerop!")
+                ". The separator is '|>' or '∘', never '.'";
+                code = :modifier_misuse, token = m)
+            specerror(what * ": qualified names like '" * string(fname) *
+                      "' are not allowed in untrusted specs; hosts can register the " *
+                      "function under a plain name with registerop!";
+                      code = :unsupported_syntax)
         end
-        error(what * ": unsupported function name " * string(fname))
+        specerror(what * ": unsupported function name " * string(fname);
+                  code = :unsupported_syntax)
     end
     op = get(SafeOps, fname, nothing)
     if op === nothing && startswith(string(fname), ".")
@@ -578,10 +671,12 @@ function compile_call(ex::Expr, cols::Vector{Symbol}, what::String)
             # die at apply time with a MethodError naming neither the spec nor
             # the colon. (Symbols stay legal as option VALUES and inside a
             # literal array, both handled elsewhere.)
-            error(what * ": ':" * string(a.value) * "' is a Symbol literal, " *
-                  "which is only an option VALUE here (boundedness = " *
-                  ":boundedbelow). A column is a bare word -- write '" *
-                  string(a.value) * "', without the colon.")
+            # dropping the colon is a genuine drop-in fix
+            specerror(what * ": ':" * string(a.value) * "' is a Symbol literal, " *
+                      "which is only an option VALUE here (boundedness = " *
+                      ":boundedbelow). A column is a bare word -- write '" *
+                      string(a.value) * "', without the colon.";
+                      code = :symbol_literal, token = a.value, fix = a.value)
         else
             push!(pts, compile_node(a, cols, what))
         end
@@ -621,21 +716,23 @@ function compile_grouped(ex::Expr, cols::Vector{Symbol}, what::String)
     end
     if !ismodifiercall(rhs)
         if isa(rhs, Symbol) && in(rhs, SafeModifiers)   # forgot the parens
-            error(what * ": " * string(rhs) * " takes columns -- write " *
-                  "\"spec " * string(combinator) * " " * string(rhs) *
-                  "(col, ...)\"")
+            specerror(what * ": " * string(rhs) * " takes columns -- write " *
+                      "\"spec " * string(combinator) * " " * string(rhs) *
+                      "(col, ...)\""; code = :modifier_misuse, token = rhs)
         end
-        hint = Base.Meta.isexpr(rhs, :call) && isa(rhs.args[1], Symbol) ?
-               didyoumean(rhs.args[1], SafeModifiers) :
-               isa(rhs, Symbol) ? didyoumean(rhs, SafeModifiers) : ""
-        error(what * ": '" * string(combinator) * "' attaches a groupby " *
-              "modifier to a nested spec (\"mean(sum(_) " *
-              string(combinator) * " groupby(year))\"), got " *
-              string(rhs) * hint)
+        tok = Base.Meta.isexpr(rhs, :call) && isa(rhs.args[1], Symbol) ?
+              rhs.args[1] : isa(rhs, Symbol) ? rhs : nothing
+        r = tok === nothing ? (hint = "", fix = nothing) : repair(tok, SafeModifiers)
+        specerror(what * ": '" * string(combinator) * "' attaches a groupby " *
+                  "modifier to a nested spec (\"mean(sum(_) " *
+                  string(combinator) * " groupby(year))\"), got " *
+                  string(rhs) * r.hint;
+                  code = :modifier_misuse, token = tok, fix = r.fix)
     end
     if rhs.args[1] == :orderby
-        error(what * ": orderby cannot attach to a nested grouped " *
-              "reduction -- subgroups are ordered by their groupby keys")
+        specerror(what * ": orderby cannot attach to a nested grouped " *
+                  "reduction -- subgroups are ordered by their groupby keys";
+                  code = :modifier_misuse, token = :orderby)
     end
     it = compile_node(lhs, cols, what)   # inner first: cols in source order
     keyargs = Any[]
@@ -684,6 +781,25 @@ end
 # Julia's own ParseError is a multi-line block with a caret diagram; the last
 # line carries the actual diagnosis ("extra tokens after end of expression").
 # Lift that out so the rejection stays one line, as a TUI needs.
+# A syntax error already knows exactly where it is: Julia's ParseError carries
+# JuliaSyntax diagnostics with byte ranges. Lift the first one rather than
+# re-deriving a span from a token there is none of. Defensive throughout -- this
+# reaches into an internal shape, and a missing span is only a missing
+# highlight.
+function parse_span(err)
+    try
+        pe = isa(err, Base.Meta.ParseError) && hasproperty(err, :detail) ?
+             err.detail : err
+        hasproperty(pe, :diagnostics) || return nothing
+        ds = pe.diagnostics
+        isempty(ds) && return nothing
+        r = Base.JuliaSyntax.byte_range(first(ds))
+        isa(r, UnitRange{Int}) && !isempty(r) ? r : nothing
+    catch
+        nothing
+    end
+end
+
 function parse_detail(err)
     msg = isa(err, AbstractString) ? String(err) :
           isa(err, Base.Meta.ParseError) ? string(err.msg) :
@@ -698,18 +814,21 @@ function safe_parse(s::AbstractString, what::String)
         Meta.parse(s)
     catch err
         detail = parse_detail(err)
-        error(what * ": cannot parse \"" * s * "\"" *
-              (isempty(detail) ? "" : " -- " * detail))
+        specerror(what * ": cannot parse \"" * s * "\"" *
+                  (isempty(detail) ? "" : " -- " * detail);
+                  code = :parse, span = parse_span(err))
     end
-    ex === nothing && error(
+    ex === nothing && specerror(
         what * ": empty spec -- a spec is a call over column names, e.g. " *
-        (what == "parseaggr" ? "\"sum(_)\"" : "\"cumsum(sales)\""))
+        (what == "parseaggr" ? "\"sum(_)\"" : "\"cumsum(sales)\"");
+        code = :empty_spec)
     if isa(ex, Expr) && ex.head == :incomplete
-        error(what * ": incomplete expression \"" * s *
-              "\" -- " * parse_detail(ex.args[1]))
+        specerror(what * ": incomplete expression \"" * s *
+                  "\" -- " * parse_detail(ex.args[1]); code = :parse)
     end
     if isa(ex, Expr) && ex.head == :toplevel
-        error(what * ": one expression only (no ';') in \"" * s * "\"")
+        specerror(what * ": one expression only (no ';') in \"" * s * "\"";
+                  code = :parse)
     end
     ex
 end
@@ -737,22 +856,25 @@ function peel_modifiers(ex, what::String)
     while ismodifiershape(ex)
         combinator, lhs, rhs = ex.args[1], ex.args[2], ex.args[3]
         if ismodifiercall(lhs)
-            error(what * ": the modifier must follow the spec -- write " *
-                  "\"spec " * string(combinator) * " " *
-                  string(lhs.args[1]) * "(...)\"")
+            specerror(what * ": the modifier must follow the spec -- write " *
+                      "\"spec " * string(combinator) * " " *
+                      string(lhs.args[1]) * "(...)\"";
+                      code = :modifier_misuse, token = lhs.args[1])
         end
         if !ismodifiercall(rhs)
             if isa(rhs, Symbol) && in(rhs, SafeModifiers)   # forgot the parens
-                error(what * ": " * string(rhs) * " takes columns -- write " *
-                      "\"spec " * string(combinator) * " " * string(rhs) *
-                      "(col, ...)\"")
+                specerror(what * ": " * string(rhs) * " takes columns -- write " *
+                          "\"spec " * string(combinator) * " " * string(rhs) *
+                          "(col, ...)\""; code = :modifier_misuse, token = rhs)
             end
-            hint = Base.Meta.isexpr(rhs, :call) && isa(rhs.args[1], Symbol) ?
-                   didyoumean(rhs.args[1], SafeModifiers) :
-                   isa(rhs, Symbol) ? didyoumean(rhs, SafeModifiers) : ""
-            error(what * ": expected a modifier call (" *
-                  join(string.(SafeModifiers), ", ") * ") after '" *
-                  string(combinator) * "', got " * string(rhs) * hint)
+            tok = Base.Meta.isexpr(rhs, :call) && isa(rhs.args[1], Symbol) ?
+                  rhs.args[1] : isa(rhs, Symbol) ? rhs : nothing
+            r = tok === nothing ? (hint = "", fix = nothing) :
+                repair(tok, SafeModifiers)
+            specerror(what * ": expected a modifier call (" *
+                      join(string.(SafeModifiers), ", ") * ") after '" *
+                      string(combinator) * "', got " * string(rhs) * r.hint;
+                      code = :modifier_misuse, token = tok, fix = r.fix)
         end
         modname = rhs.args[1]
         args = rhs.args[2:end]
@@ -796,6 +918,117 @@ function peel_modifiers(ex, what::String)
         ex = lhs
     end
     (ex, order, by)
+end
+
+# ---- shape inference --------------------------------------------------------
+# What a whole spec EXPRESSION returns, relative to the rows it is handed:
+#
+#   :scalar      one value       sum(_), mean(x) / std(x), a literal
+#   :rowwise     one per row     cumsum(x), x > 1, sales / sum(sales)
+#   :collection  many, unaligned skipmissing(x), [a, b], a nested grouped
+#                                reduction (one element per KEY, not per row)
+#   :unknown     give up         anything touching an undeclared operator
+#
+# Composition is the point: the top-level NAME is not enough. `sum(_ * wt) /
+# sum(wt)` is a division -- elementwise -- yet reduces, because both operands
+# do. `sales / sum(sales)` is the same division and does not. Only propagating
+# through the tree tells them apart, which is why this is an inference rather
+# than a lookup.
+#
+# :unknown is absorbing on purpose. One undeclared host verb anywhere in the
+# expression turns the whole answer into "no opinion", and every check below
+# then stays silent -- the same bail-out check_kwargs makes when it meets a
+# `kwargs...` method.
+function shape_of(ex)
+    isa(ex, Symbol) && return ex === :_ ? :rowwise : :rowwise   # column or target
+    isa(ex, QuoteNode) && return :scalar
+    isa(ex, Union{Number,AbstractString,Char,Bool}) && return :scalar
+    isa(ex, Expr) || return :unknown
+    ex.head === :vect && return :collection
+    (ex.head === :(&&) || ex.head === :(||) || ex.head === :comparison) &&
+        return combine_shapes(map(shape_of, ex.args))
+    # a nested `inner |> groupby(keys)` yields one element per KEY
+    ismodifiershape(ex) && return :collection
+    ex.head === :call || return :unknown
+    fname = ex.args[1]
+    isa(fname, Symbol) || return :unknown
+    s = opshape(fname)
+    s === :reduce && return :scalar
+    s === :map && return :rowwise
+    s === :filter && return :collection
+    s === :unknown && return :unknown
+    combine_shapes([shape_of(a) for a in positional_args(ex)])   # :elementwise
+end
+
+# an elementwise call is as "wide" as its widest argument, and one :unknown
+# poisons the result
+combine_shapes(ss) =
+    isempty(ss) ? :scalar :
+    any(==(:unknown), ss) ? :unknown :
+    any(==(:collection), ss) ? :collection :
+    any(==(:rowwise), ss) ? :rowwise : :scalar
+
+# Which call actually collapsed the rows? The TOP-LEVEL name is usually the
+# wrong one to blame: in `where(any(flag))` the top is `where` (elementwise,
+# innocent) and the culprit is `any` one level down. Descend through
+# elementwise calls to name the reduction the user has to reconsider, since
+# that is the token they must edit.
+function reducing_culprit(ex)
+    isa(ex, Expr) || return nothing
+    if ex.head === :call && isa(ex.args[1], Symbol)
+        opshape(ex.args[1]) === :reduce && return ex.args[1]
+        opshape(ex.args[1]) === :elementwise || return nothing
+    elseif !(ex.head === :(&&) || ex.head === :(||) || ex.head === :comparison)
+        return nothing
+    end
+    args = ex.head === :call ? positional_args(ex) : ex.args
+    for a in args
+        c = reducing_culprit(a)
+        c === nothing || return c
+    end
+    nothing
+end
+
+# The mirror of reducing_culprit, for the aggregation side: what stopped this
+# spec collapsing to one value? A bare column read row by row, or a :map/:filter
+# verb that preserves them. Descend only through branches that are NOT already
+# scalar -- `sum(a) + qtty` should blame `qtty`, not `sum`.
+function unreduced_culprit(ex)
+    isa(ex, Symbol) && return ex
+    isa(ex, Expr) || return nothing
+    local args
+    if ex.head === :call && isa(ex.args[1], Symbol)
+        s = opshape(ex.args[1])
+        (s === :map || s === :filter) && return ex.args[1]
+        s === :elementwise || return nothing        # :reduce/:unknown stop here
+        args = positional_args(ex)
+    elseif ex.head === :(&&) || ex.head === :(||) || ex.head === :comparison
+        args = ex.args
+    else
+        return nothing
+    end
+    for a in args
+        shape_of(a) === :scalar && continue         # this branch already reduced
+        c = unreduced_culprit(a)
+        c === nothing || return c
+    end
+    nothing
+end
+
+# A :map verb handed nothing but scalars has nothing to map over. This is how
+# `where(any(flag)) |> groupby(region)` used to reach the engine and die with a
+# raw `TypeError: non-boolean (Int64) used in boolean context` -- and it is
+# decidable here because every :map verb rejects a scalar argument outright.
+# Silent unless EVERY positional argument is definitively scalar.
+function check_mapshape(what::String, fname::Symbol, ex::Expr)
+    opshape(fname) === :map || return nothing
+    args = positional_args(ex)
+    isempty(args) && return nothing
+    all(a -> shape_of(a) === :scalar, args) || return nothing
+    specerror(what * ": '" * string(fname) * "' works down a column, but every " *
+              "argument here is a single value -- name the column it should " *
+              "run over, e.g. '" * string(fname) * "(sales)'";
+              code = :shape, token = fname)
 end
 
 # where's default labels are the condition's SOURCE TEXT, which only the
@@ -843,9 +1076,11 @@ iscondshape(ex) =
 # "must be a function call", which does not name what is wrong.
 function shape_error(what::String, ex, src::String, generic::String)
     if isa(ex, Expr) && haskey(SafeRejections, ex.head)
-        error(what * ": " * SafeRejections[ex.head] * " (in \"" * src * "\")")
+        specerror(what * ": " * SafeRejections[ex.head] * " (in \"" * src * "\")";
+                  code = :unsupported_syntax, token = ex.head)
     end
-    error(what * ": " * generic * ", got \"" * src * "\"")
+    specerror(what * ": " * generic * ", got \"" * src * "\"";
+              code = :unsupported_syntax)
 end
 
 # checkcols: validate a spec's column references against the columns a host
@@ -875,11 +1110,16 @@ function checkcols(s::Union{SafeAggrSpec,SafeDimSpec}, columns::AbstractVector{S
     isa(s, SafeDimSpec) && foreach(c -> add!(c, "groupby "), byrefs(s.by))
     for (c, origin) in refs
         if !in(c, columns)
-            hint = didyoumean(c, sort(columns))
-            error("checkcols: spec \"" * s.source * "\" references " * origin *
-                  "column '" * string(c) * "', which does not exist" *
-                  (isempty(hint) ? ". Available columns: " *
-                                   join(sort(columns), ", ") : hint))
+            r = repair(c, sort(columns))
+            # checkcols runs outside with_spec_context (after the cache lookup),
+            # so it locates its own token
+            specerror("checkcols: spec \"" * s.source * "\" references " * origin *
+                      "column '" * string(c) * "', which does not exist" *
+                      (isempty(r.hint) ? ". Available columns: " *
+                                         join(sort(columns), ", ") : r.hint);
+                      code = :unknown_column, token = c, fix = r.fix,
+                      span = token_span(s.source, c, :unknown_column),
+                      spec = s.source)
         end
     end
     s
@@ -895,15 +1135,32 @@ const SafeSpecCache = Dict{Tuple{Symbol,String},Any}()
 # tags errors raised by shared helpers further down (order entries, verbs).
 const SPEC_CONTEXT_MARK = " [in "
 
+# This is also the choke point that makes the diagnostic TYPE uniform: whatever
+# a helper deeper down threw -- a classified SpecError from safe.jl, or a plain
+# ErrorException from a verb or an order-entry helper that has not been
+# classified -- comes out of parseaggr/parsedim as a SpecError carrying the
+# spec source. An unclassified site therefore still yields a usable diagnostic
+# (`code = :invalid_spec`), so classifying a site is always additive and never
+# a prerequisite. The message is rebuilt exactly as before.
 function with_spec_context(f, what::String, src::String)
     try
         f()
     catch e
-        isa(e, ErrorException) || rethrow()
-        occursin(SPEC_CONTEXT_MARK, e.msg) && rethrow()   # already tagged
+        isa(e, Union{ErrorException,SpecError}) || rethrow()
+        isa(e, SpecError) && e.spec !== nothing && rethrow()   # already tagged
+        occursin(SPEC_CONTEXT_MARK, e.msg) && rethrow()        # ...ditto, untyped
         msg = startswith(e.msg, what * ":") ? e.msg : what * ": " * e.msg
-        error(msg * SPEC_CONTEXT_MARK *
-              (what == "parseaggr" ? "aggr\"" : "dim\"") * src * "\"]")
+        code  = isa(e, SpecError) ? e.code : :invalid_spec
+        token = isa(e, SpecError) ? e.token : nothing
+        # locate the offending text here too -- a site that set `token` gets a
+        # highlight without ever having to know a byte offset
+        span  = isa(e, SpecError) && e.span !== nothing ? e.span :
+                token_span(src, token, code)
+        throw(SpecError(msg * SPEC_CONTEXT_MARK *
+                        (what == "parseaggr" ? "aggr\"" : "dim\"") * src * "\"]";
+                        code = code, token = token,
+                        fix  = isa(e, SpecError) ? e.fix : nothing,
+                        span = span, spec = src))
     end
 end
 
@@ -929,32 +1186,35 @@ function parseaggr_impl(src::String)
     # Reuse the exact same peeling dim specs use, rather than a parallel
     # implementation.
     (ex, order, by) = peel_modifiers(ex, "parseaggr")
-    isempty(by) || error(
+    isempty(by) || specerror(
         "parseaggr: a top-level groupby modifier is a dimension-spec " *
         "feature; an aggregation spec must reduce to ONE value, and a " *
         "grouped reduction yields one value per key -- NEST it in a " *
         "reduction instead: \"mean(sum(_) |> groupby(year))\". (orderby IS " *
-        "allowed at the top level: \"first(_) |> orderby(date)\")",
+        "allowed at the top level: \"first(_) |> orderby(date)\")";
+        code = :modifier_misuse, token = :groupby,
     )
-    any(p -> p.first == :_, order) && error(
+    any(p -> p.first == :_, order) && specerror(
         "parseaggr: '_' has no meaning in orderby -- it names the " *
         "aggregation target, which is bound to a real column only when " *
         "the spec is applied (the same spec can target different columns), " *
-        "not a fixed row-order key. Order by a real column instead.",
+        "not a fixed row-order key. Order by a real column instead.";
+        code = :target_placeholder, token = :_,
     )
     if isa(ex, Symbol)                   # aggr"sum" -- bare registered name
         if !haskey(SafeOps, ex)
-            ex === :_ && error(
+            ex === :_ && specerror(
                 "parseaggr: '_' names the aggregation target column, it is " *
                 "not itself an aggregation -- reduce it: \"sum(_)\", " *
-                "\"mean(_)\", \"last(_) |> orderby(date)\"")
+                "\"mean(_)\", \"last(_) |> orderby(date)\"";
+                code = :target_placeholder, token = :_)
             # a lone word that repairs to nothing is far likelier to be a
             # column than a mistyped verb -- say the useful thing
-            op_is_repairable(ex) || error(
+            op_is_repairable(ex) || specerror(
                 "parseaggr: '" * string(ex) * "' is a column reference, not " *
                 "an aggregation -- reduce it (\"sum(" * string(ex) * ")\"), " *
                 "or use '_' to mean whichever column the spec is applied to " *
-                "(\"sum(_)\")")
+                "(\"sum(_)\")"; code = :bare_name, token = ex)
             unknown_op_error("parseaggr", ex)
         end
         ex = Expr(:call, ex, :_)         # lower to sum(_), like trusted :sum
@@ -965,6 +1225,31 @@ function parseaggr_impl(src::String)
     desugar_where!(ex, "parseaggr")
     cols = Symbol[]
     thunk = compile_node(ex, cols, "parseaggr")
+    # Shape is checked AFTER compiling, deliberately. The compiler's per-node
+    # rejections are more specific than any whole-spec verdict -- `cumsum(:qty)`
+    # should be told about the colon, not that it computes one value per row --
+    # and the ladder rule is most-specific-first (see unknown_op_error).
+    # An aggregation must land on ONE value per group; a row-wise or unaligned
+    # spec used to compile fine and then put a vector, or a lazy SkipMissing,
+    # in a cell.
+    let sh = shape_of(ex), culprit = unreduced_culprit(ex)
+        sh === :rowwise && specerror(
+            "parseaggr: this computes one value per ROW" *
+            (culprit === nothing ? "" :
+             " ('" * string(culprit) * "' is read row by row)") *
+            ", but an aggregation reduces the group to ONE value -- wrap it " *
+            "in a reduction, e.g. \"sum(" * src * ")\" or \"mean(" * src *
+            ")\". (A dimension spec is the row-wise form: dim\"" * src * "\".)";
+            code = :shape, token = culprit)
+        sh === :collection && specerror(
+            "parseaggr: this yields many values, not one -- an aggregation " *
+            "reduces the group to a single value, so feed it to a reduction: " *
+            "\"sum(" * src * ")\", \"first(" * src * ")\", \"countuniq(" *
+            src * ")\".";
+            code = :shape, token = culprit)
+    end
+    isa(ex, Expr) && ex.head === :call && isa(ex.args[1], Symbol) &&
+        check_mapshape("parseaggr", ex.args[1], ex)
     fname = iscondshape(ex) ? Symbol(ex.head) : ex.args[1]
     SafeAggrSpec(src, fname, (vs...) -> thunk(vs), cols, order)
 end
@@ -987,13 +1272,15 @@ function parsedim_impl(src::String)
     (ex, order, by) = peel_modifiers(ex, "parsedim")
     if !(isa(ex, Expr) && ex.head == :call) && !iscondshape(ex)
         if isa(ex, Symbol) && haskey(SafeOps, ex)
-            error("parsedim: '" * src * "' is an operator name -- write it " *
-                  "as a call: \"" * src * "(col)\"")
+            specerror("parsedim: '" * src * "' is an operator name -- write it " *
+                      "as a call: \"" * src * "(col)\"";
+                      code = :bare_name, token = ex)
         elseif isa(ex, Symbol)
-            error("parsedim: a bare column name is a chain KEY, not a " *
-                  "dimension spec -- list it directly in the chain " *
-                  "([:region, :" * src * "]); a dim spec computes something, " *
-                  "e.g. \"cumsum(" * src * ")\"")
+            specerror("parsedim: a bare column name is a chain KEY, not a " *
+                      "dimension spec -- list it directly in the chain " *
+                      "([:region, :" * src * "]); a dim spec computes something, " *
+                      "e.g. \"cumsum(" * src * ")\"";
+                      code = :bare_name, token = ex)
         end
         shape_error("parsedim", ex, src,
                     "spec must be a function call (e.g. \"cumsum(sales)\")")
@@ -1002,9 +1289,39 @@ function parsedim_impl(src::String)
     cols = Symbol[]
     thunk = compile_node(ex, cols, "parsedim")
     in(:_, cols) &&
-        error("parsedim: '_' is the aggregation target placeholder and has no " *
-              "meaning in a dim spec -- a dimension is computed from named " *
-              "columns, so name the one you want (\"cumsum(sales)\")")
+        specerror("parsedim: '_' is the aggregation target placeholder and has no " *
+                  "meaning in a dim spec -- a dimension is computed from named " *
+                  "columns, so name the one you want (\"cumsum(sales)\")";
+                  code = :target_placeholder, token = :_)
+    # Shape is checked AFTER compiling, deliberately -- the compiler's per-node
+    # rejections are more specific than any whole-spec verdict (the ladder rule,
+    # see unknown_op_error).
+    # A `|> groupby(...)` dim is a PIVOT: the measure is aggregated to one value
+    # per group and the verb then CLASSIFIES those groups, so it must return one
+    # label PER GROUP. A reducing spec returns a single scalar instead, which
+    # the engine could only report much later as "spec must return one value per
+    # group (N groups)" -- with no hint that `mean` was the wrong kind of verb.
+    # Window dims are exempt: there a scalar is legal and broadcasts.
+    if !isempty(by)
+        sh = shape_of(ex)
+        culprit = reducing_culprit(ex)
+        sh === :scalar && specerror(
+            "parsedim: a groupby dimension LABELS each group, so it must give " *
+            "one value per group" *
+            (culprit === nothing ? "" :
+             ", but '" * string(culprit) * "' reduces them to a single value") *
+            ". Classify the groups instead -- rank/denserank, quantiles, " *
+            "discretize, topnames, or where(<condition on the group's total>) " *
+            "-- or drop the groupby to compute this per row. (To REDUCE the " *
+            "frame to one row per group, that is agg, not dim.)";
+            code = :shape, token = culprit)
+        sh === :collection && specerror(
+            "parsedim: a groupby dimension must give one label per group, but " *
+            "this yields a collection that is not aligned with them";
+            code = :shape)
+    end
+    isa(ex, Expr) && ex.head === :call && isa(ex.args[1], Symbol) &&
+        check_mapshape("parsedim", ex.args[1], ex)
     posargs = iscondshape(ex) ? Any[] :
               Any[simple_posarg(a) for a in positional_args(ex)]
     fname = iscondshape(ex) ? Symbol(ex.head) : ex.args[1]

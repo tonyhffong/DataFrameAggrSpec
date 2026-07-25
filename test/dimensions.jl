@@ -98,7 +98,7 @@ end
     catch e
         e
     end
-    @test err isa ErrorException
+    @test err isa Exception
     @test occursin("bad", err.msg)
 
     # name collision errors unless replace=true

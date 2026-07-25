@@ -11,6 +11,24 @@ column.
 > `safe-dimension-operators.md`). The testset *"operator docs stay in sync"*
 > in `test/safe.jl` fails otherwise.
 
+## The spec must reduce
+
+An aggregation lands on **one value per group**, so the parser rejects a spec
+whose shape is row-wise or a loose collection — it would otherwise compile
+cleanly and drop a vector (or a lazy `SkipMissing`) into a cell:
+
+```julia
+aggr"sum(_)"                    # ✓
+aggr"sum(_ * wt) / sum(wt)"     # ✓ a division, but both operands reduce
+aggr"where(sum(_) > 100)"       # ✓ labels the GROUP by its total
+aggr"cumsum(_)"                 # ✗ one value per ROW — that is a dim spec
+aggr"skipmissing(_)"            # ✗ many values — feed it to a reduction
+```
+
+The rule is each operator's declared **shape** (`opshape`), propagated through
+the expression rather than read off the top-level name: `sum(_ * wt) / sum(wt)`
+and `sales / sum(sales)` are both divisions, and only the first reduces.
+
 ## Grammar recap
 
 - bare identifier = **column** (`wt`, `EnrlTot`); **`_`** = the target column

@@ -23,7 +23,7 @@ function msg(f, needle)
     catch e
         e
     end
-    err isa ErrorException && occursin(needle, err.msg)
+    err isa Exception && occursin(needle, sprint(showerror, err))
 end
 
 function msg2(s, needle)
@@ -32,8 +32,8 @@ function msg2(s, needle)
             p(s)
             isempty(needle) && return true
         catch e
-            e isa ErrorException || rethrow()
-            occursin(needle, e.msg) && return true
+            e isa Exception || rethrow()
+            occursin(needle, sprint(showerror, e)) && return true
         end
     end
     false
@@ -88,7 +88,7 @@ end
         catch e
             e
         end
-        err isa ErrorException && occursin(needle, err.msg)
+        err isa Exception && occursin(needle, sprint(showerror, err))
     end
 
     @test reject("Core.eval(Main, x)", "qualified names")
@@ -138,6 +138,91 @@ end
     # registerop! guards its namespace invariants
     @test_throws ErrorException registerop!(Symbol("Base.run"), identity)
     @test_throws ErrorException registerop!(:push!, push!)
+end
+
+@testset "every shipped operator declares a shape" begin
+    # The third sync guard, beside the docs and per-operator-test ones. An
+    # operator with no declared shape is invisible to the shape checks (they
+    # bail to :unknown rather than guess), so a forgotten declaration would
+    # silently switch them off for every spec mentioning it.
+    for op in DataFrameAggrSpec.DefaultSafeOps
+        @test DataFrameAggrSpec.opshape(op) !== :unknown
+    end
+    # a host verb is unknown until it opts in -- and opting in is validated
+    @test DataFrameAggrSpec.opshape(:definitely_not_registered) === :unknown
+    registerop!(:shapetest_op, sum)
+    @test DataFrameAggrSpec.opshape(:shapetest_op) === :unknown
+    registerop!(:shapetest_op, sum; shape = :reduce)
+    @test DataFrameAggrSpec.opshape(:shapetest_op) === :reduce
+    @test msg(() -> registerop!(:shapetest_op, sum; shape = :reduces),
+              "did you mean 'reduce'?")
+    delete!(DataFrameAggrSpec.SafeOps, :shapetest_op)
+    delete!(DataFrameAggrSpec.SafeOpShapes, :shapetest_op)
+end
+
+@testset "shape inference and the shape checks" begin
+    sh(s) = DataFrameAggrSpec.shape_of(Meta.parse(s))
+
+    # composition is the point: the same `/` reduces or does not, depending on
+    # whether its operands do
+    @test sh("sum(_ * wt) / sum(wt)") === :scalar
+    @test sh("sales / sum(sales)")    === :rowwise
+    @test sh("sum(sales)")            === :scalar
+    @test sh("cumsum(x)")             === :rowwise
+    @test sh("skipmissing(x)")        === :collection
+    @test sh("[a, b]")                === :collection
+    @test sh("3")                     === :scalar
+    @test sh("x > 1 && y < 2")        === :rowwise
+    # `where` follows its condition rather than always mapping
+    @test sh("where(sales > 12)")     === :rowwise
+    @test sh("where(sum(x) > 12)")    === :scalar
+    # :unknown is absorbing -- one undeclared verb silences every check
+    @test sh("sum(mystery(x))")       === :scalar   # sum reduces regardless
+    @test sh("mystery(x) + 1")        === :unknown
+
+    # an aggregation must reduce to one value
+    @test msg2("cumsum(_)", "one value per ROW")
+    @test msg(() -> parseaggr("skipmissing(_)"), "yields many values, not one")
+    # ...but the legitimate reducing forms all still parse
+    for s in ["sum(_)", "sum(_ * wt) / sum(wt)", "nrow", "countuniq",
+              "mean(sum(_) |> groupby(year))", "where(sum(_) > 100)",
+              "count(coalesce(_ > 0, false))", "unionall(_)", "extrema(_)"]
+        @test parseaggr(s) isa SafeAggrSpec
+    end
+
+    # a groupby dimension must LABEL each group, not collapse them. This is the
+    # check that would have caught `mean(m) |> groupby(c)` shipping in our own
+    # templates; the engine could only say "spec must return one value per
+    # group (N groups)" much later, naming nothing.
+    @test msg(() -> parsedim("mean(x) |> groupby(g)"), "must give one value per group")
+    @test msg(() -> parsedim("mean(x) |> groupby(g)"), "'mean' reduces them")
+    # the blame lands on the REDUCTION, not the innocent top-level verb
+    @test msg(() -> parsedim("where(any(flag)) |> groupby(g)"), "'any' reduces them")
+    @test msg(() -> parsedim("skipmissing(x) |> groupby(g)"), "not aligned")
+    # ...and the classifying verbs are unaffected
+    for s in ["rank(sales) |> groupby(region)", "denserank(x) |> groupby(g)",
+              "quantiles(sales, ngroups = 4) |> groupby(region)",
+              "discretize(x, [0, 10]) |> groupby(g)",
+              "where(active > 0) |> groupby(region)",
+              "cumsum(sales) |> groupby(yyyymm(date))"]
+        @test parsedim(s) isa SafeDimSpec
+    end
+    # a WINDOW dim is exempt -- there a scalar is legal and broadcasts
+    @test parsedim("sum(sales)") isa SafeDimSpec
+    @test parsedim("mean(x)")    isa SafeDimSpec
+
+    # a :map verb handed nothing but scalars has nothing to map over
+    @test msg(() -> parsedim("cumsum(sum(x))"), "works down a column")
+    @test msg(() -> parsedim("rank(1)"), "works down a column")
+
+    # the shape verdict is whole-spec, so it must not pre-empt the compiler's
+    # per-node rejections -- `cumsum(:qty)` is a colon mistake, not a shape one
+    @test msg2("cumsum(:qty)", "is a Symbol literal")
+    @test msg2("cumsum(maen(x))", "did you mean 'mean'?")
+
+    # shape errors are diagnostics like any other
+    e = try (parsedim("mean(x) |> groupby(g)"); nothing) catch e; e end
+    @test e isa SpecError && e.code === :shape && e.token === :mean
 end
 
 @testset "every shipped operator has a test" begin
@@ -224,9 +309,9 @@ end
     @test msg(() -> parseaggr("sum(qtty)"; columns = avail), "did you mean 'qty'?")
     @test msg(() -> parsedim("cumsum(sales) |> orderby(dat)"; columns = avail),
               "did you mean 'date'?")                    # orderby cols validated
-    @test msg(() -> parsedim("mean(qty) |> groupby(regoin)"; columns = avail),
+    @test msg(() -> parsedim("rank(qty) |> groupby(regoin)"; columns = avail),
               "did you mean 'region'?")                  # groupby keys validated
-    @test msg(() -> parsedim("mean(qty) |> groupby(yyyymm(dat))"; columns = avail),
+    @test msg(() -> parsedim("rank(qty) |> groupby(yyyymm(dat))"; columns = avail),
               "did you mean 'date'?")   # a COMPUTED groupby key's real columns validate too
     @test checkcols(parseaggr("sum(qty)"), avail) === parseaggr("sum(qty)")
     @test msg(() -> checkcols(parseaggr("sum(zzzzz)"), avail), "Available columns")
@@ -235,7 +320,7 @@ end
     # knows which part of the string to edit
     @test msg(() -> parsedim("cumsum(sales) |> orderby(dat)"; columns = avail),
               "references orderby column 'dat'")
-    @test msg(() -> parsedim("mean(qty) |> groupby(regoin)"; columns = avail),
+    @test msg(() -> parsedim("rank(qty) |> groupby(regoin)"; columns = avail),
               "references groupby column 'regoin'")
 
     # apply-time: agg keys, measure sources, and dim inputs all suggest
@@ -371,6 +456,143 @@ end
 
     # '_' alone is the target column, not an aggregation
     @test msg2("_", "names the aggregation target column")
+end
+
+@testset "SpecError: the machine channel" begin
+    # design/user-guidance.md, "the machine-facing direction". The message is
+    # the human contract and must not change; `code`/`token`/`fix` are the
+    # linter/copilot channel beside it.
+    err(f) = try (f(); nothing) catch e; e end
+
+    # showerror prints msg verbatim -- switching a site from `error` to
+    # `specerror` is invisible to anyone reading the output
+    e = err(() -> parseaggr("maen(_)"))
+    @test e isa SpecError
+    @test sprint(showerror, e) == e.msg
+    @test occursin("did you mean 'mean'?", e.msg)
+
+    # ...and the repair `nearest` computed is no longer discarded
+    @test (e.code, e.token, e.fix) == (:unknown_op, :maen, :mean)
+
+    # a `fix` is a DROP-IN: substituting it for `token` must yield a valid spec
+    for (src, kind) in [("maen(_)", :aggr), ("sum(qty) / coutn(qty)", :aggr),
+                        ("cumsmu(sales)", :dim), ("dense_rank(x)", :dim),
+                        ("cumsum(x) |> orderb(d)", :dim)]
+        d = err(() -> kind === :aggr ? parseaggr(src) : parsedim(src))
+        @test d isa SpecError && d.fix !== nothing
+        fixed = replace(src, string(d.token) => string(d.fix))
+        @test (kind === :aggr ? parseaggr(fixed) : parsedim(fixed)) !== nothing
+    end
+
+    # codes distinguish the ladder's rungs, so a consumer can branch
+    @test err(() -> parsedim("(a > 1) & (b < 2)")).code == :boolean_operator
+    @test err(() -> parseaggr("avg(_)")).code           == :foreign_spelling
+    @test err(() -> parsedim("dense_rank(x)")).code     == :spelling_convention
+    @test err(() -> parsedim("orderby(date)")).code     == :modifier_misuse
+    @test err(() -> parsedim("topnames()")).code        == :arity
+    @test err(() -> parsedim("rank(x, rve = true)")).code == :unknown_kwarg
+    @test err(() -> parsedim("cumsum(:qty)")).code      == :symbol_literal
+    @test err(() -> parsedim("x = 1")).code             == :unsupported_syntax
+    @test err(() -> parsedim("sum(")).code              == :parse
+    @test err(() -> parseaggr("")).code                 == :empty_spec
+    @test err(() -> parseaggr("_")).code                == :target_placeholder
+    @test err(() -> parseaggr("nope")).code             == :bare_name
+
+    # a foreign spelling deliberately offers NO fix: the table's values are
+    # prose ("Use ___ instead"), and guessing a token out of prose is the kind
+    # of repair rule G3 forbids
+    fs = err(() -> parseaggr("avg(_)"))
+    @test fs.token === :avg && fs.fix === nothing
+
+    # the colon flip's fix is the bare word
+    cf = err(() -> parsedim("cumsum(:qty)"))
+    @test (cf.token, cf.fix) == (:qty, :qty)
+
+    # column diagnostics carry the spec they came from, so a host need not
+    # regex the `[in aggr"…"]` suffix back out of the message
+    cc = err(() -> parseaggr("sum(qtty)"; columns = [:qty, :region]))
+    @test (cc.code, cc.token, cc.fix) == (:unknown_column, :qtty, :qty)
+    @test cc.spec == "sum(qtty)"
+    tagged = err(() -> parseaggr("suum(x)"))
+    @test tagged.spec == "suum(x)"
+    @test occursin("[in aggr\"suum(x)\"]", tagged.msg)   # message unchanged
+
+    # an unclassified site still yields a usable diagnostic rather than an
+    # untyped ErrorException -- classifying a site is additive, never a
+    # prerequisite
+    u = err(() -> parsedim("cumsum(x) |> orderby(d => :dsc)"))
+    @test u isa SpecError && u.spec == "cumsum(x) |> orderby(d => :dsc)"
+    @test (u.code, u.token, u.fix) == (:order_entry, :dsc, :desc)
+
+    # apply-time column checks are diagnostics too
+    df = DataFrame(region = ["E"], qty = [1])
+    a = err(() -> agg(df, :regoin))
+    @test a isa SpecError && (a.code, a.token, a.fix) == (:unknown_column, :regoin, :region)
+
+    # host-code mistakes stay ordinary ErrorExceptions -- they are not
+    # something a linter reports against a user's spec
+    for f in (() -> registerop!(:orderby, identity),
+              () -> AggrHints("qty" => :sum),
+              () -> dimspec(:(cumsum(x)); kind = :nope),
+              () -> spec_templates(:bogus))
+        @test err(f) isa ErrorException
+    end
+end
+
+@testset "SpecError: source spans" begin
+    err(f) = try (f(); nothing) catch e; e end
+    at(e) = e.span === nothing ? nothing : e.spec[e.span]
+
+    # the span underlines the offending TEXT, in bytes into `spec`
+    @test at(err(() -> parseaggr("sum(_ * wt) / maen(wt)"))) == "maen"
+    @test at(err(() -> parsedim("(a > 1) & (b < 2)")))       == "&"
+    @test at(err(() -> parsedim("rank(x, rve = true)")))     == "rve"
+    @test at(err(() -> parseaggr("sum(qtty)"; columns = [:qty]))) == "qtty"
+
+    # `span` + `fix` compose into an edit that actually repairs the spec
+    for (src, kind) in [("sum(_ * wt) / maen(wt)", :aggr), ("cumsmu(sales)", :dim),
+                        ("cumsum(:qty)", :dim), ("dense_rank(x)", :dim),
+                        ("cumsum(x) |> orderby(d => :dsc)", :dim),
+                        ("rank(x) |> groupby(\"region\")", :dim)]
+        e = err(() -> kind === :aggr ? parseaggr(src) : parsedim(src))
+        @test e.span !== nothing && e.fix !== nothing
+        fixed = e.spec[1:first(e.span)-1] * string(e.fix) * e.spec[last(e.span)+1:end]
+        @test (kind === :aggr ? parseaggr(fixed) : parsedim(fixed)) !== nothing
+    end
+
+    # a quoting mistake spans the QUOTING too -- swapping `qty` for `qty` would
+    # repair nothing, so the colon/quotes have to be inside the range
+    @test at(err(() -> parsedim("cumsum(:qty)")))                  == ":qty"
+    @test at(err(() -> parsedim("mean(x) |> groupby(\"region\")"))) == "\"region\""
+    # ...while a direction typo does NOT, since `desc` replaces `dsc` after the colon
+    @test at(err(() -> parsedim("cumsum(x) |> orderby(d => :dsc)"))) == "dsc"
+
+    # shape verdicts point at what caused them, on both sides
+    @test at(err(() -> parsedim("mean(x) |> groupby(g)")))       == "mean"
+    @test at(err(() -> parsedim("where(any(f)) |> groupby(g)"))) == "any"
+    @test at(err(() -> parseaggr("sum(a) + qtty")))              == "qtty"
+    @test at(err(() -> parseaggr("cumsum(_)")))                  == "cumsum"
+
+    # a syntax error carries the range Julia's own parser reported
+    @test at(err(() -> parsedim("sum(x))"))) == ")"
+
+    # byte ranges stay correct across multibyte characters
+    e = err(() -> parseaggr("sum(x ≠ y) / maen(z)"))
+    @test e.spec[e.span] == "maen"
+
+    # the span indexes the STRIPPED source, which is what `spec` holds
+    e2 = err(() -> parseaggr("   maen(_)   "))
+    @test e2.spec == "maen(_)" && e2.spec[e2.span] == "maen"
+
+    # a span is never guessed into existence
+    @test err(() -> parseaggr("foo(_)")).span == 1:3          # located
+    @test err(() -> parseaggr("")).span === nothing           # nothing to point at
+
+    # the lexer is advisory and must never throw, whatever it is handed
+    for s in ["\"unterminated", "a \\ b", "\$(x)", "sum(x) # c", "≠≠≠", ":", "x!"]
+        @test DataFrameAggrSpec.token_span(s, :nope, :invalid_spec) === nothing
+        @test DataFrameAggrSpec.scan_tokens(s) isa Vector
+    end
 end
 
 @testset "argument-name typos are repaired too" begin

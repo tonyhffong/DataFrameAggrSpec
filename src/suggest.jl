@@ -74,9 +74,20 @@ function nearest(tok::AbstractString, candidates)
     best
 end
 
-# Hint fragment appended to error messages: "" when nothing is close enough,
-# so call sites degrade gracefully to the plain rejection.
-function didyoumean(tok, candidates)
+# The repair, computed ONCE and returned in both currencies: `hint` is the
+# fragment appended to the human message ("" when nothing is close enough, so
+# call sites degrade gracefully to the plain rejection), `fix` is the same
+# answer as data for `SpecError.fix` -- a drop-in replacement a linter or an
+# agent can apply without re-deriving it.
+#
+# The two must not drift: a message that names a repair the machine channel
+# does not offer (or vice versa) is exactly the incoherence the rest of this
+# package is organised against. Hence one function, two views -- `didyoumean`
+# below is just the hint half for sites that have no diagnostic to fill in.
+function repair(tok, candidates)
     n = nearest(string(tok), candidates)
-    n === nothing ? "" : " -- did you mean '" * string(n) * "'?"
+    (hint = n === nothing ? "" : " -- did you mean '" * string(n) * "'?",
+     fix  = n === nothing ? nothing : Symbol(n))
 end
+
+didyoumean(tok, candidates) = repair(tok, candidates).hint

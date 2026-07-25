@@ -238,7 +238,7 @@ end
     @test occursin("window kind", Dict(specfields(w))["order by"])
     @test !haskey(Dict(specfields(w)), "group by")
 
-    p = parsedim("mean(x) |> groupby(g)")
+    p = parsedim("rank(x) |> groupby(g)")
     @test occursin("pivot by g", specsummary(p))
     @test occursin("pivot kind", Dict(specfields(p))["group by"])
 
