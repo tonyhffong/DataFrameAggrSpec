@@ -1,11 +1,11 @@
 # Composition rules
 
-*Formalization, 2026-07-23. Compiled from the expressiveness review and the
-three fixes that followed it (design/expressiveness-roadmap.md #7, #8, and
-the `topnames`/categorical fix behind #3). The individual design notes each
-answer one narrow question; this note names the invariants that recur across
-all of them, so future extensions can be checked against a fixed rule set
-instead of re-deriving intent from precedent.*
+*Formalization, 2026-07-23. The individual design notes each answer one
+narrow question; this note names the invariants that recur across all of
+them, so future extensions can be checked against a fixed rule set instead
+of re-deriving intent from precedent. Companion notes: `expressiveness.md`
+(what the vocabulary may say), `prior-art.md` (how comparable systems
+solve the same problems).*
 
 Each rule is stated, then justified against the code as it exists today —
 not aspirationally. Where a rule is an obligation on *callers* the engine
@@ -237,17 +237,3 @@ because it's the reason the other eleven rules tend to have an existing
 analogue outside this package — when extending the grammar, prefer whatever
 spelling a SQL/dplyr/DataFrames.jl reader would already guess over a novel
 one, even if the novel one is marginally shorter.
-
-## Where this bites: this session's three findings, mapped to the rules above
-
-- **Finding #1** (`AggrHints` silently mis-resolving `Union{Missing,T}`):
-  found and confirmed via R3's decomposition technique — `dim` looked
-  right, `agg` didn't, so the destructive step was the only place left to
-  look.
-- **Finding #2** (`agg` returning zero rows for an empty measure list): a
-  violation of R3's sharpened destructiveness contract — group *count* was
-  destroyed, not just per-row detail.
-- **Finding #3** (`groupby(...)` modifier rejecting computed keys): a
-  violation of R1/R8 — a dimension-composition capability (computed keys)
-  that the nested composite form already had was arbitrarily absent from
-  the structurally parallel top-level modifier.

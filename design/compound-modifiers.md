@@ -6,11 +6,11 @@ With the original `∘` symbol, composition says I should think orderby first,
 then groupby, then the verb — analyze the semantic fidelity of what we are
 trying to do."*
 
-Context: `expressiveness-roadmap.md` #4 proposes allowing `orderby` on pivot
-dims (sort the inner groups before the kernel — the Pareto idiom
+Context: `orderby` is allowed on pivot dims (sort the inner groups before the
+kernel — the Pareto idiom
 `cumsum(sales) |> groupby(region) |> orderby(sales => :desc)`), which is the
-first place both modifiers would legally coexist on one spec. This note
-settles what their textual order may mean *before* that lands.
+one place both modifiers legally coexist on a single spec. This note settles
+what their textual order may mean.
 
 ## The engine has exactly one plan
 
@@ -54,8 +54,8 @@ clause sequence (`GROUP BY` then `ORDER BY`, where everyone already accepts
 that the SELECT expression is written first but evaluated last), and it
 matches SQL window-function syntax exactly —
 `OVER (PARTITION BY region ORDER BY date)` puts partitioning before
-ordering, and that ordering means precisely what #4 proposes: order the
-things the aggregate consumes.
+ordering, and that ordering means precisely what pivot `orderby` does: order
+the things the aggregate consumes.
 
 **So the two glyphs, read "honestly" in their own traditions, demand
 OPPOSITE textual orders.** And the grammar has already made a promise it
@@ -99,9 +99,9 @@ stylistic choice. **Errors should mark ambiguity, not variance.**
    itself — `orderby`'s columns name values that exist only
    post-aggregation. Anchor for SQL readers: the natural spelling coincides
    with `OVER (PARTITION BY … ORDER BY …)`.
-4. **When #4 lands**: `orderby` on a pivot dim = sort the inner groups (by
-   aggregated deps or keys) before the kernel; accept either textual order;
-   keep rejecting duplicates.
+4. **On a pivot dim**: `orderby` sorts the inner groups (by aggregated deps
+   or keys) before the kernel; either textual order is accepted; duplicates
+   are still rejected.
 
 ## The honest cost
 
@@ -110,6 +110,7 @@ reading `verb ∘ groupby ∘ orderby` strictly will infer a false order. The
 mitigation is the one SQL has used for fifty years: clauses are
 declarations, and the docs say so in one sentence.
 
-Status: no code change (current parse behavior already matches). This note
-constrains #4's implementation: do NOT make compound-modifier order
-meaningful, and do NOT canonicalize one order with an error on the other.
+Status: no code change (parse behavior already matches). This note is a
+standing constraint on the compound-modifier form: do NOT make modifier
+order meaningful, and do NOT canonicalize one order with an error on the
+other.
