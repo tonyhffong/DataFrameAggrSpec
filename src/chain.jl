@@ -40,8 +40,9 @@ function dimspec(
     if isa(spec, Expr)
         check_spec_call(spec, "dimspec")
     end
-    in(kind, (:auto, :window, :pivot)) ||
-        error("dimspec: kind must be :auto, :window or :pivot, got " * string(kind))
+    in(kind, (:auto, :window, :pivot)) || error(
+        "dimspec: kind must be :auto, :window or :pivot, got '" * string(kind) *
+        "'" * didyoumean(kind, (:auto, :window, :pivot)))
     DimSpec(spec, tosyms(by), normalize_order(order), kind)
 end
 

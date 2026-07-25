@@ -130,6 +130,14 @@ end
 # What the frame's OTHER columns make offerable. Every flag is about a SHAPE, not
 # a name -- the template keeps its generic placeholder either way. No column
 # information at all means "don't filter".
+#
+# `order` is gated on a DATE sibling specifically, not on any orderable one.
+# The gate and the placeholder have to agree: `_AGGR_ORDERED` names `date`, so
+# opening the gate for a numeric-only frame would suggest a column family the
+# user demonstrably does not have -- a placeholder is only honest (G8,
+# design/user-guidance.md) while it reads as "edit me", and `orderby(date)` on a
+# frame with no date reads as a claim about the frame. Ordering by a numeric
+# sequence column stays typeable; it is just not offered unprompted.
 function _aggr_context(coltypes, target)
     coltypes === nothing && return (weight = true, order = true, group = true)
     weight = order = group = false
@@ -137,12 +145,8 @@ function _aggr_context(coltypes, target)
         c === target && continue
         group = true                  # any other column can serve as a group key
         fam = _type_family(T)
-        if fam === :numeric
-            weight = true
-            order  = true
-        elseif fam === :date
-            order = true
-        end
+        fam === :numeric && (weight = true)
+        fam === :date    && (order  = true)
     end
     (weight = weight, order = order, group = group)
 end
@@ -244,7 +248,8 @@ const _DIM_TEMPLATES = String[
     "lead(sales) |> orderby(date)",         # next row's value
     "discretize(score, [0, 20, 40, 60, 80, 100])",  # labeled bins
     "topnames(name, sales, 5)",             # top-5 by measure, rest -> "Others"
-    "quantiles(score, ngroups=4)",          # quartile bucket
+    "quantiles(score, ngroups = 4)",        # quartile bucket (a bare `4` would
+                                            # be read as the BOUNDARIES vector)
     "rank(sales, rev = true)",              # 1 = biggest; ties share, then skip
     "denserank(sales)",                     # ties share, no gaps
     "tiedrank(sales)",                      # ties share their average rank
@@ -276,16 +281,26 @@ function _dim_templates_for(coltypes)
     out = String[]
     for c in nums
         push!(out, "discretize($c, [0, 20, 40, 60, 80, 100])")
-        push!(out, "quantiles($c, 4)")
+        # the bucket COUNT is a keyword -- `quantiles(c, 4)` parses (arity 2 is
+        # in range) and then dies at apply time, since the second positional is
+        # the boundaries vector. Exactly the failure the run-the-templates test
+        # below exists to catch.
+        push!(out, "quantiles($c, ngroups = 4)")
         push!(out, "rank($c, rev = true)")          # 1 = biggest
         if order !== nothing && order != c
             push!(out, "cumsum($c) |> orderby($order)")
             push!(out, "lag($c) |> orderby($order)")
         end
     end
+    # A `|> groupby(...)` dim is a PIVOT: the measure is aggregated to one value
+    # per group and the verb then CLASSIFIES those groups, so the spec must map
+    # a vector of group aggregates to one label per group. Only vector->vector
+    # verbs belong here -- a reducer like `mean` returns a single scalar and the
+    # engine rejects it ("spec must return one value per group"). Reducing is
+    # what `agg` is for; this axis labels groups without collapsing rows.
     for c in texts
         measure !== nothing && push!(out, "topnames($c, $measure, 5)")
-        measure !== nothing && push!(out, "mean($measure) |> groupby($c)")
+        measure !== nothing && push!(out, "quantiles($measure, ngroups = 4) |> groupby($c)")
         measure !== nothing && push!(out, "rank($measure) |> groupby($c)")  # rank the groups
     end
     for c in dates
@@ -294,7 +309,11 @@ function _dim_templates_for(coltypes)
     end
     for c in bools
         push!(out, "where($c)")
-        isempty(texts) || push!(out, "where(any($c)) |> groupby($(first(texts)))")
+        # ...and the pivot reading: under `groupby` the Bool column arrives
+        # ALREADY aggregated (a count per group, via AggrHints), so the
+        # per-group "any true" test is `> 0`, not `any(...)` -- `any` would be
+        # handed Ints and die in boolean context.
+        isempty(texts) || push!(out, "where($c > 0) |> groupby($(first(texts)))")
     end
     if measure !== nothing
         # the tie shapes, once -- `ordinalrank` is the one that needs an order
@@ -370,7 +389,8 @@ function spec_templates(kind::Symbol; coltypes = nothing, target = nothing,
     elseif kind === :dim
         ct === nothing ? copy(_DIM_TEMPLATES) : _dim_templates_for(ct)
     else
-        error("spec_templates: kind must be :aggr or :dim, got $(repr(kind))")
+        error("spec_templates: kind must be :aggr or :dim, got '" *
+              string(kind) * "'" * didyoumean(kind, (:aggr, :dim)))
     end
 end
 
@@ -419,8 +439,8 @@ end
     spec_vocabulary(kind::Symbol; columns=nothing) -> Vector{String}
 
 Every identifier a spec of this `kind` may legally name: the whitelisted
-operation names ([`listops`](@ref)) plus `columns`, plus the `orderby`/`groupby`
-modifiers for `:dim`. Sorted and deduplicated.
+operation names ([`listops`](@ref)) plus `columns` plus the `orderby`/`groupby`
+modifiers. Sorted and deduplicated.
 
 The vocabulary for identifier (Tab) completion — the proactive counterpart to
 the did-you-mean repair [`checkcols`](@ref) and the parser apply after the fact.
@@ -428,44 +448,68 @@ Operator glyphs (`+`, `==`, `≠`) are excluded: they are not identifier-
 completable, and a host typically reaches them through a LaTeX-style `\\name`
 expansion instead.
 
+Both modifiers are offered for **both** kinds, because both are legal in both:
+an aggr spec takes a top-level `orderby` (`aggr"first(_) |> orderby(date)"` —
+sort the group's rows, then reduce) and a nested `groupby` (the composite
+reduction `aggr"mean(sum(_) |> groupby(year))"`). What differs between the kinds
+is where a modifier may appear and what it means, which is the parser's business
+to enforce, not the completion list's to pre-empt — and [`spec_templates`](@ref)
+offers aggr templates containing both, so a vocabulary omitting them could not
+complete text this package had just suggested.
+
 ```julia
 vocab = spec_vocabulary(:aggr; columns = propertynames(df))
 filter(startswith("str"), vocab)      # -> ["strjoinuniq"]
 ```
 """
 function spec_vocabulary(kind::Symbol; columns = nothing)
-    kind in (:aggr, :dim) ||
-        error("spec_vocabulary: kind must be :aggr or :dim, got $(repr(kind))")
-    ops = String[string(o) for o in listops() if isletter(first(string(o)))]
-    kind === :dim && append!(ops, String[string(m) for m in SafeModifiers])
+    kind in (:aggr, :dim) || error(
+        "spec_vocabulary: kind must be :aggr or :dim, got '" * string(kind) *
+        "'" * didyoumean(kind, (:aggr, :dim)))
+    ops = String[string(o) for o in listops() if isidenttoken(string(o))]
+    append!(ops, String[string(m) for m in SafeModifiers])
     cols = columns === nothing ? String[] : String[string(c) for c in columns]
     sort!(unique!(vcat(cols, ops)))
 end
+
+# Render a peeled `order` list the way the user wrote it, direction included.
+# The echo has to distinguish specs the ENGINE distinguishes: `orderby(d)` and
+# `orderby(d => :desc)` sort a group opposite ways, and `first`/`last` read off
+# opposite ends, so collapsing both to "ordered by d" confirms a spec the user
+# did not type. Spelled in grammar syntax so it round-trips to the text field.
+order_labels(order) =
+    join([p.second ? string(p.first) * " => :desc" : string(p.first)
+          for p in order], ", ")
 
 """
     specsummary(spec::Union{SafeAggrSpec,SafeDimSpec}) -> String
 
 One-line structural description of a parsed spec — what it reduces or computes,
-and (for a dim spec) which kind it inferred. For a host echoing back what the
-text the user just typed actually means.
+how its rows or groups are ordered, and (for a dim spec) which kind it inferred.
+For a host echoing back what the text the user just typed actually means.
 
 ```julia
-specsummary(aggr"sum(_ * wt) / sum(wt)")   # "reduce via /   [cols: _, wt]"
-specsummary(dim"cumsum(x) |> orderby(d)")  # "cumsum   [ordered by d]"
+specsummary(aggr"sum(_ * wt) / sum(wt)")        # "reduce via /   [cols: _, wt]"
+specsummary(aggr"first(_) |> orderby(d)")       # "reduce via first   [cols: _; ordered by d]"
+specsummary(dim"cumsum(x) |> orderby(d)")       # "cumsum   [ordered by d]"
+specsummary(dim"lag(x) |> orderby(d => :desc)") # "lag   [ordered by d => :desc]"
 ```
 
 See also [`specfields`](@ref) for the same information as labelled pairs.
 """
 function specsummary(s::SafeAggrSpec)
     cols = join(string.(s.cols), ", ")
-    "reduce via $(s.fname)   [cols: $(isempty(cols) ? "—" : cols)]"
+    tags = String["cols: " * (isempty(cols) ? "—" : cols)]
+    # a top-level orderby sorts the group's rows before the reduction runs --
+    # what first/last need to mean anything, so it belongs in the echo
+    isempty(s.order) || push!(tags, "ordered by " * order_labels(s.order))
+    "reduce via $(s.fname)   [" * join(tags, "; ") * "]"
 end
 
 function specsummary(s::SafeDimSpec)
     tags = String[]
     isempty(s.by)    || push!(tags, "pivot by " * join(string.(s.by), ", "))
-    isempty(s.order) || push!(tags, "ordered by " *
-                              join(string.(first.(s.order)), ", "))
+    isempty(s.order) || push!(tags, "ordered by " * order_labels(s.order))
     isempty(tags) && push!(tags, "window")
     "$(s.fname)   [" * join(tags, "; ") * "]"
 end
@@ -476,13 +520,21 @@ end
 The structure of a parsed spec as `label => value` pairs, for a host that wants
 to lay the fields out itself (aligned columns, a table, a detail pane) rather
 than take the one-line [`specsummary`](@ref). Only the fields that carry
-information for this spec are present: a dim spec reports `group by` only when
-it has a `groupby` (pivot kind) and `order by` only when it has an `orderby`
-(window kind).
+information for this spec are present: an aggr spec reports `order by` only when
+it has a top-level `orderby`, and a dim spec reports `group by` only when it has
+a `groupby` (pivot kind) and `order by` only when it has an `orderby` (window
+kind).
+
+`columns` lists the spec's own column references; ordering keys are reported
+under `order by` rather than folded in, because that is where the user has to
+edit them.
 """
 function specfields(s::SafeAggrSpec)
-    Pair{String,String}["function" => string(s.fname),
-                        "columns"  => join(string.(s.cols), ", ")]
+    out = Pair{String,String}["function" => string(s.fname),
+                              "columns"  => join(string.(s.cols), ", ")]
+    isempty(s.order) || push!(out, "order by" =>
+        order_labels(s.order) * "   (rows sorted before reducing)")
+    out
 end
 
 function specfields(s::SafeDimSpec)
@@ -491,6 +543,6 @@ function specfields(s::SafeDimSpec)
     isempty(s.by)    || push!(out, "group by" =>
         join(string.(s.by), ", ") * "   (pivot kind)")
     isempty(s.order) || push!(out, "order by" =>
-        join(string.(first.(s.order)), ", ") * "   (window kind)")
+        order_labels(s.order) * "   (window kind)")
     out
 end

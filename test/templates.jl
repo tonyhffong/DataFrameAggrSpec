@@ -79,6 +79,13 @@ end
     @test !any(s -> occursin("orderby", s), t3)
     @test !any(s -> occursin("sum(_ * wt)", s), t3)
     @test "mean(sum(_) |> groupby(year))" in t3
+
+    # the `orderby` gate follows the PLACEHOLDER, not just orderability: the
+    # template names `date`, so a numeric-only frame must not be offered it
+    t4 = spec_templates(:aggr; coltypes = DataFrame(sales = [1], cost = [2.0]),
+                        target = :sales)
+    @test !any(s -> occursin("orderby", s), t4)
+    @test "sum(_ * wt) / sum(wt)" in t4          # a numeric sibling still weights
 end
 
 @testset "observed data promotes the specs that match the values" begin
@@ -139,7 +146,7 @@ end
     t = spec_templates(:dim; coltypes = df)
 
     @test "discretize(sales, [0, 20, 40, 60, 80, 100])" in t
-    @test "quantiles(sales, 4)"            in t
+    @test "quantiles(sales, ngroups = 4)"  in t   # count is a KEYWORD, not arg 2
     @test "cumsum(sales) |> orderby(date)" in t   # ordered by the date column
     @test "topnames(region, sales, 5)"     in t   # text col + numeric measure
 
@@ -150,6 +157,11 @@ end
     @test "tiedrank(sales)"                     in t
     @test "ordinalrank(sales) |> orderby(date)" in t
     @test "rank(sales) |> groupby(region)"      in t   # rank the GROUPS
+    # a pivot dim CLASSIFIES groups, so only vector->vector verbs belong under
+    # `groupby` -- a reducer would return one scalar where the engine wants one
+    # label per group
+    @test "quantiles(sales, ngroups = 4) |> groupby(region)" in t
+    @test !any(s -> occursin("mean(sales) |> groupby", s), t)
 
     # date columns get the calendar buckets + a computed groupby key
     @test "yyyymm(date)" in t
@@ -161,7 +173,9 @@ end
                                                   sales = [1, 2],
                                                   active = [true, false]))
     @test "where(active)" in b
-    @test "where(any(active)) |> groupby(region)" in b
+    # under `groupby` the Bool arrives aggregated to a per-group COUNT, so the
+    # "any true in this group" test is `> 0` -- `any(active)` would get Ints
+    @test "where(active > 0) |> groupby(region)" in b
     @test !any(s -> occursin("discretize(active", s), b)
 
     # :dim ignores the aggr-only target context
@@ -185,12 +199,33 @@ end
     @test "sum" in v && "strjoinuniq" in v
     @test v == sort(v) && allunique(v)             # sorted + deduplicated
     @test !any(s -> occursin("+", s) || occursin("=", s), v)  # no operator glyphs
-    # the modifiers are dim-only
-    @test "orderby" in spec_vocabulary(:dim) && "groupby" in spec_vocabulary(:dim)
-    @test !("orderby" in spec_vocabulary(:aggr))
+    # BOTH modifiers are legal in BOTH kinds, so both are completable in both:
+    # an aggr spec takes a top-level orderby and a nested groupby, and
+    # spec_templates(:aggr) hands out text containing each
+    for k in (:aggr, :dim)
+        @test "orderby" in spec_vocabulary(k) && "groupby" in spec_vocabulary(k)
+    end
     # every listed operation name is offered
-    @test all(o -> !isletter(first(string(o))) || string(o) in v, listops())
+    @test all(o -> !DFAS.isidenttoken(string(o)) || string(o) in v, listops())
     @test_throws ErrorException spec_vocabulary(:bogus)
+end
+
+@testset "templates and vocabulary agree on every identifier" begin
+    # G5 (design/user-guidance.md): what the proactive half OFFERS, the
+    # proactive half must also be able to COMPLETE. A template naming an
+    # identifier absent from the vocabulary is how `orderby` went missing for
+    # :aggr -- the `?` dropdown handed out text Tab could not finish.
+    df = DataFrame(region = ["E", "W"], date = [Date(2026, 1, 1), Date(2026, 2, 1)],
+                   sales = [1, 2], wt = [1.0, 2.0])
+    for (kind, ct) in ((:aggr, df), (:aggr, nothing), (:dim, df), (:dim, nothing))
+        vocab = Set(spec_vocabulary(kind))
+        for t in spec_templates(kind; coltypes = ct)
+            for w in eachmatch(r"[A-Za-z_][A-Za-z0-9_]*(?=\s*\()", t)
+                # placeholder column names are not vocabulary; call positions are
+                @test w.match in vocab
+            end
+        end
+    end
 end
 
 @testset "specsummary / specfields" begin
@@ -209,6 +244,21 @@ end
 
     # a plain dim spec is a window with nothing to report
     @test occursin("window", specsummary(parsedim("discretize(x, [0, 1])")))
+
+    # G6: the echo must distinguish specs the ENGINE distinguishes. An aggr
+    # spec's top-level orderby decides which row `first`/`last` return, so
+    # dropping it would confirm back a spec the user did not type.
+    ao = parseaggr("first(_) |> orderby(d)")
+    @test specsummary(ao) != specsummary(parseaggr("first(_)"))
+    @test occursin("ordered by d", specsummary(ao))
+    @test occursin("d", Dict(specfields(ao))["order by"])
+    @test !haskey(Dict(specfields(parseaggr("first(_)"))), "order by")
+
+    # …and so does a sort DIRECTION, on both sides
+    @test occursin("d => :desc", specsummary(parseaggr("last(_) |> orderby(d => :desc)")))
+    @test occursin("d => :desc", specsummary(parsedim("lag(x) |> orderby(d => :desc)")))
+    @test specsummary(parsedim("lag(x) |> orderby(d)")) !=
+          specsummary(parsedim("lag(x) |> orderby(d => :desc)"))
 end
 
 @testset "kind must be :aggr or :dim" begin
@@ -240,12 +290,18 @@ end
         end
     end
 
-    # dim templates parse and validate against the frame they were built from.
-    # `name`/`profit`/`district`/`business`/`score` are placeholders in the
-    # no-coltypes fallback list, so only the derived list is column-checked.
+    # dim templates parse, validate against the frame they were built from, and
+    # RUN on it -- the derived list names that frame's real columns, so there is
+    # nothing stopping the same end-to-end check the aggr loop gets. (Parsing
+    # alone would miss a template that is grammatical but throws in the engine,
+    # e.g. a verb/modifier pairing the kind inference rejects.)
     for s in spec_templates(:dim; coltypes = df)
-        @test parsedim(s; columns = cols) isa SafeDimSpec
+        spec = parsedim(s; columns = cols)
+        @test spec isa SafeDimSpec
+        @test dim(df, [:out => spec]) isa AbstractDataFrame
     end
+    # the no-coltypes fallback list is written against placeholder column names
+    # (`name`/`profit`/`district`/`business`/`score`), so it can only be parsed
     for s in spec_templates(:dim)
         @test parsedim(s) isa SafeDimSpec
     end

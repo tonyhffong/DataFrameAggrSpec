@@ -472,6 +472,21 @@ parseaggr(usertext; columns = propertynames(df))   # sum(qtty) — did you mean 
 sources, dimension inputs), so misspelled columns fail with a suggestion
 instead of a bare DataFrames indexing error.
 
+The rejections above are only half of it. `spec_templates(kind; coltypes,
+target, targetdata)` proposes whole starter specs *before* the user types,
+narrowed by the target column's type, the frame's other columns, and the values
+actually in front of them; `spec_vocabulary` is the identifier-completion list;
+`specsummary`/`specfields` render a parsed spec back as text a host can echo.
+Both halves read the same registry, so a `registerop!` shows up in suggestion,
+completion and repair at once.
+
+[design/user-guidance.md](design/user-guidance.md) covers the whole system as
+one thing — the four moments (templates before typing → completion while typing
+→ rejection or echo-back on submit → `checkcols` at apply time), why the
+rejection ladder tries its rungs in that order, and the eight rules the two
+halves must jointly satisfy. **Read it before adding an error message or a
+template.**
+
 ### Extending the whitelist
 
 Hosts extend the whitelist deliberately, in code — never via spec strings:
@@ -550,6 +565,14 @@ that begins "why doesn't it just…":
 - [expressiveness.md](design/expressiveness.md) — why the vocabulary has the
   shape it has, and which spellings were declined (`ifelse`, `&`/`|`,
   aliases for Base names). **Read before requesting a new operator.**
+- [user-guidance.md](design/user-guidance.md) — how the package gets an analyst
+  to a spec that parses and means what they wanted: the proactive half
+  (`spec_templates`/`spec_vocabulary`) and the reactive half (the rejection
+  ladder, did-you-mean, `checkcols`) as one system, the rules that keep them
+  from contradicting each other, and the guards that keep either from going
+  stale. **Read before adding an error message or a template.** Also covers
+  the machine-facing direction — using the same parser and diagnostics from a
+  linter, an LSP server, or an LLM that writes specs.
 - [prior-art.md](design/prior-art.md) — how this relates to Elasticsearch
   bucket/metric aggregations, MongoDB `$setWindowFields`, Tableau LOD
   expressions, and DAX calculated columns vs measures.

@@ -12,6 +12,20 @@ using Test
 # tried, so each case can be written in whichever spelling reads best (`_`
 # forms are aggregation-only, chain-key advice is dimension-only). An empty
 # needle asserts the spec PARSES.
+# Message-matching helper: thunk must throw an ErrorException whose message
+# contains the needle. Use this when the call under test is not a bare parse
+# (a kwarg, a `columns` check, a chain verb); `msg2` below is the parse-only
+# shorthand.
+function msg(f, needle)
+    err = try
+        f()
+        nothing
+    catch e
+        e
+    end
+    err isa ErrorException && occursin(needle, err.msg)
+end
+
 function msg2(s, needle)
     for p in (parsedim, parseaggr)
         try
@@ -174,18 +188,6 @@ end
 end
 
 @testset "helpful errors" begin
-    # message-matching helper: thunk must throw an ErrorException whose
-    # message contains the needle
-    msg(f, needle) = begin
-        err = try
-            f()
-            nothing
-        catch e
-            e
-        end
-        err isa ErrorException && occursin(needle, err.msg)
-    end
-
     # operator typos repair against the whitelist (OSA: transposition = 1 edit)
     @test msg(() -> parseaggr("maen(_)"), "did you mean 'mean'?")
     @test msg(() -> parseaggr("sum(qty) / coutn(qty)"), "did you mean 'count'?")
@@ -359,8 +361,26 @@ end
     @test DataFrameAggrSpec.nearest("nean", [:mean, Symbol("!")]) == :mean
     @test DataFrameAggrSpec.nearest("!=", [:mean, Symbol("!")]) == Symbol("!")
 
+    # equal-distance candidates resolve by SHARED PREFIX, not alphabetically:
+    # 'dsc' is one edit from both 'asc' and 'desc', and the 'd' the user got
+    # right is the evidence about which they meant
+    @test DataFrameAggrSpec.nearest("dsc", [:asc, :desc]) == :desc
+    @test DataFrameAggrSpec.nearest("yyymm", DataFrameAggrSpec.listops()) == :yyyymm
+    # the prefix rule is a TIE-break only -- it never beats a closer candidate
+    @test DataFrameAggrSpec.nearest("meam", [:mean, :median]) == :mean
+
     # '_' alone is the target column, not an aggregation
     @test msg2("_", "names the aggregation target column")
+end
+
+@testset "argument-name typos are repaired too" begin
+    # `kind` is developer-facing rather than end-user-facing, but the repair is
+    # one call and the sites used to disagree on whether to even try
+    @test msg(() -> spec_templates(:aggrr), "did you mean 'aggr'?")
+    @test msg(() -> spec_vocabulary(:dimm), "did you mean 'dim'?")
+    @test msg(() -> dimspec(:(cumsum(x)); kind = :windo), "did you mean 'window'?")
+    # ...and they agree with orderentry's long-standing wording
+    @test msg(() -> parsedim("cumsum(x) |> orderby(d => :dsc)"), "did you mean 'desc'?")
 end
 
 @testset "modifier and ordering mistakes" begin
