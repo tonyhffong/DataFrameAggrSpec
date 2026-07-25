@@ -16,8 +16,12 @@ modified.
 
 - bare identifier = **column** (`District`, `sales`); `_` is **not** allowed
   (it is the aggregation-target placeholder)
-- `:sym` = a Symbol option value (`boundedness = :boundedbelow`); literals:
-  numbers, strings, `true`/`false`, `[ ... ]` arrays
+- `:sym` = a Symbol option *value* (`boundedness = :boundedbelow`), and only
+  that — a positional `:col` (or a `groupby(:col)` key) is rejected with a
+  pointer to the bare spelling, since the colon means the opposite of what it
+  means in a trusted `Expr`. Literals: numbers, strings, `true`/`false`,
+  `[ ... ]` arrays (a `[:a, :b]` array of Symbols is fine — the restriction is
+  on the argument position, not on Symbols)
 - kwargs in either form: `f(x, k = v)` or `f(x; k = v)`
 - no dots needed for arithmetic — operators broadcast
 - Boolean conditions combine with `&&`, `||`, `!` — pure elementwise over

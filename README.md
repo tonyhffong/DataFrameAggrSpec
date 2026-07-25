@@ -439,15 +439,30 @@ are compile-time sugar for the same thing).
   identifiers, hence column references, not constants — so missing-value
   defaults are literals (`coalesce(x, 0)`, never `coalesce(x, missing)`).
 
-**Errors are written for the person typing the spec.** Rejections repair the
-offending token against the known vocabulary (OSA / restricted
-Damerau-Levenshtein, so transpositions are one edit) and reply with a
-`did you mean '...'?` hint: `maen(_)` suggests `mean`, `|> orderb(d)` suggests
-`orderby`, and a misplaced `orderby(date)` gets the
-`"spec |> orderby(...)"` pattern reminder instead of "unknown function".
+**Errors are written for the person typing the spec** — the standard they are
+held to is that the message says what to type *instead*, and quotes the spec
+it came from (a host parses many per frame, so "unknown function 'foo'" alone
+does not say which one to fix). What that buys, in the order the parser tries:
+
+| You typed | It says |
+|---|---|
+| `maen(_)` | did you mean `mean`? — OSA repair, so transpositions are one edit |
+| `avg(_)`, `nunique(x)`, `ifelse(...)` | not registered here — use `mean(x)` / `countuniq(x)` / `where(cond)`. The spellings people arrive with from SQL, dplyr, pandas and Excel are redirected by name; they are **not** aliases, the spec still fails |
+| `dense_rank(x)`, `SUM(_)` | write it as `denserank` / `sum` — operator names are lowercase, no underscores |
+| `(a > 1) & (b < 2)` | combine conditions with `&&` (and why: it binds looser than the comparisons) |
+| `orderby(date)` | `orderby` is a postfix modifier — `"cumsum(sales) \|> orderby(date)"` |
+| `cumsum(x).orderby(date)` | same reminder — the separator is `\|>` or `∘`, never `.` |
+| `cumsum(:qty)`, `groupby(:region)` | `:qty` is a Symbol literal, only an option *value* here — a column is a bare word, without the colon |
+| `topnames()`, `lag(x, 1, 2, 3)` | takes 3 positional arguments, got 0 — arity is checked against the verb's own method table at **parse** time, not left to become a `MethodError` inside a group-by |
+| `rank(x, rve = true)` | no keyword option `rve` — did you mean `rev`? Accepted: `rev` |
+| `orderby(date, :desc)` | `desc` is a sort direction, not a column — `orderby(date => :desc)` |
+| `x = 1`, `f.(x)`, `df[1, 1]` | assignment / broadcast calls / indexing are not allowed |
+| nothing close enough | the registry itself, as the discovery mechanism of last resort |
+
 Pass the frame's columns to get the same treatment for column references —
 `checkcols(spec, columns)` validates a parsed spec (including `orderby`/
-`groupby` columns), and the entry points take it as a kwarg:
+`groupby` columns, and naming which of the two a bad reference sits in), and
+the entry points take it as a kwarg:
 
 ```julia
 parseaggr(usertext; columns = propertynames(df))   # sum(qtty) — did you mean 'qty'?

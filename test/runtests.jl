@@ -25,6 +25,9 @@ using Test
     @testset "safe DSL integration (hints / dims / chains)" begin
         include("safe-integration.jl")
     end
+    @testset "spec suggestion (templates / vocabulary / summary)" begin
+        include("templates.jl")
+    end
     @testset "window dimensions" begin
         include("dimensions.jl")
     end

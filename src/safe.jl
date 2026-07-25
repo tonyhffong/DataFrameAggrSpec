@@ -244,9 +244,93 @@ modifier_reminder(m::Symbol) =
     "first: \"mean(x) |> groupby(key)\" aggregates the measure per key " *
     "before the verb classifies (dim specs only)"
 
-# unknown function in call position: modifier reminder, did-you-mean repair
-# against the whitelist, or the full registry as a last resort (it is the only
-# discovery mechanism when nothing is close)
+# Spellings a user arrives with from SQL, dplyr, pandas or Excel, mapped to what
+# this grammar calls the same thing. These are NOT aliases -- the registry keeps
+# exactly one spelling per concept (design/expressiveness.md) and the spec still
+# FAILS. They exist because the OSA repair below can only rescue a misspelling
+# of a whitelisted word: `avg` is four edits from `mean`, so a user typing it
+# has no way to guess the local name from the rejection alone. Keyed by the
+# UNDERSCORE-STRIPPED, lowercased name, so `row_number`/`ROW_NUMBER` land here
+# too. Values complete the sentence "Use ___ instead."
+const ForeignSpellings = Dict{Symbol,String}(
+    :avg            => "mean(x)",
+    :average        => "mean(x)",
+    :stddev         => "std(x)",
+    :stdev          => "std(x)",
+    :sd             => "std(x)",
+    :variance       => "var(x)",
+    :n              => "nrow (the group's row count -- aggr\"nrow\")",
+    :rowcount       => "nrow",
+    :size           => "nrow for the group's row count, or length(x)",
+    :len            => "length(x)",
+    :nunique        => "countuniq(x)",
+    :ndistinct      => "countuniq(x)",
+    :countdistinct  => "countuniq(x)",
+    :distinct       => "countuniq(x) to count them, uniqvalue(x) for the one " *
+                       "distinct value, or strjoinuniq(x) to list them",
+    :unique         => "countuniq(x) to count them, uniqvalue(x) for the one " *
+                       "distinct value, or strjoinuniq(x) to list them",
+    :groupconcat    => "strjoinuniq(x)",
+    :stringagg      => "strjoinuniq(x)",
+    :listagg        => "strjoinuniq(x)",
+    :concat         => "strjoinuniq(x)",
+    :strjoin        => "strjoinuniq(x)",
+    :ifelse         => "where(cond), which labels both sides -- or plain " *
+                       "arithmetic, e.g. x * (x > 0)",
+    :ifthen         => "where(cond)",
+    :iif            => "where(cond)",
+    :casewhen       => "where(cond) for a two-way split, or " *
+                       "discretize(x, breaks) for numeric bands",
+    :switch         => "where(cond), or discretize(x, breaks) for numeric bands",
+    :filter         => "where(cond) as a chain key, then reduce",
+    :subset         => "where(cond) as a chain key, then reduce",
+    :rownumber      => "ordinalrank(x)",
+    :rowid          => "ordinalrank(x)",
+    :ntile          => "quantiles(x, ngroups = 4)",
+    :percentile     => "quantile(x, 0.9)",
+    :percentilecont => "quantile(x, 0.9)",
+    :top            => "topnames(labels, values, n)",
+    :topn           => "topnames(labels, values, n)",
+    :cut            => "discretize(x, breaks)",
+    :bin            => "discretize(x, breaks)",
+    :ifnull         => "coalesce(x, 0)",
+    :nvl            => "coalesce(x, 0)",
+    :isnull         => "ismissing(x) to flag it, coalesce(x, 0) to replace it",
+    :isna           => "ismissing(x) to flag it, coalesce(x, 0) to replace it",
+    :fillna         => "coalesce(x, 0)",
+    :fillmissing    => "coalesce(x, 0)",
+    :dropna         => "skipmissing(x)",
+    :dropmissing    => "skipmissing(x)",
+    :naomit         => "skipmissing(x)",
+    :argmax         => "last(_) |> orderby(col) -- the value at col's maximum",
+    :argmin         => "first(_) |> orderby(col) -- the value at col's minimum",
+    :maxby          => "last(_) |> orderby(col)",
+    :minby          => "first(_) |> orderby(col)",
+    :shift          => "lag(x) or lead(x)",
+    :runningtotal   => "cumsum(x)",
+    :sumif          => "sum(x * (cond)) -- the condition is just a column " *
+                       "expression",
+    :countif        => "count(cond)",
+)
+
+# lookup key for ForeignSpellings and the no-underscores redirect
+squash(name) = Symbol(replace(lowercase(string(name)), "_" => ""))
+
+# the whitelist as a user should read it. The symbolic entries (dotted aliases,
+# unicode twins) are two thirds of listops() and teach nothing when spelled out
+# one by one, so they are summarized instead.
+function registry_summary()
+    named = [s for s in string.(listops()) if isidenttoken(s)]
+    "Named operations: " * join(named, ", ") *
+    ". Operators: + - * / ^ == != < <= > >= (plus their dotted and unicode " *
+    "spellings) and && / || for conditions. " *
+    "(listops() shows the live registry; hosts extend it with registerop!.)"
+end
+
+# unknown function in call position. Ordered most-specific first: a structural
+# redirect, a modifier misuse, the foreign-spelling table, an OSA repair, and
+# only then the registry dump -- which is the discovery mechanism of last
+# resort, when the package has nothing better to offer than the vocabulary.
 function unknown_op_error(what::String, fname::Symbol)
     # DataFrames muscle memory: .& / .| are spelled && / || in this grammar
     if in(fname, (Symbol("&"), Symbol("|"), Symbol(".&"), Symbol(".|")))
@@ -257,6 +341,19 @@ function unknown_op_error(what::String, fname::Symbol)
               "needed: a > 1 " * c * " b < 2)")
     end
     in(fname, SafeModifiers) && error(what * ": " * modifier_reminder(fname))
+    sq = squash(fname)
+    # `dense_rank`, `ROW_NUMBER`: the concept exists, the spelling does not
+    # (operator names carry no underscores -- design/expressiveness.md)
+    if sq !== fname && haskey(SafeOps, sq)
+        error(what * ": '" * string(fname) * "' is not registered -- write it " *
+              "as '" * string(sq) * "' (operator names are lowercase and carry " *
+              "no underscores).")
+    end
+    if haskey(ForeignSpellings, sq)
+        error(what * ": '" * string(fname) * "' is not registered here -- use " *
+              ForeignSpellings[sq] * ". (listops() shows the whitelist; " *
+              "hosts can extend it with registerop!.)")
+    end
     n = nearest(string(fname), vcat(listops(), collect(SafeModifiers)))
     if n isa Symbol && in(n, SafeModifiers)
         error(what * ": unknown function '" * string(fname) * "'. " *
@@ -266,9 +363,129 @@ function unknown_op_error(what::String, fname::Symbol)
               "' -- did you mean '" * string(n) * "'? (listops() shows the " *
               "whitelist; hosts can extend it with registerop!.)")
     end
-    error(what * ": unknown function '" * string(fname) *
-          "'. Registered operations: " * join(listops(), ", ") *
-          ". (Hosts can extend the whitelist with registerop!.)")
+    error(what * ": unknown function '" * string(fname) * "'. " *
+          registry_summary())
+end
+
+# a literal where a grouping key belongs. Both `groupby` paths (the nested
+# composite reduction and the top-level modifier) funnel here so the colon and
+# quote habits -- by far the commonest way to write this wrong, since every
+# other DataFrames API wants `:col` or `"col"` -- get named as such instead of
+# being reported as "a literal".
+function groupby_literal_error(what::String, a)
+    if isa(a, QuoteNode) && isa(a.value, Symbol)
+        error(what * ": ':" * string(a.value) * "' is a Symbol literal -- a " *
+              "grouping key is a bare column name, written without the colon: " *
+              "groupby(" * string(a.value) * ")")
+    end
+    isa(a, AbstractString) && Base.isidentifier(a) && error(
+        what * ": " * repr(a) * " is a string literal -- a grouping key is a " *
+        "bare column name, written without the quotes: groupby(" * a * ")")
+    error(what * ": groupby keys must be columns (or elementwise transforms " *
+          "of columns, e.g. yyyy(t)), got the literal " * repr(a))
+end
+
+# would unknown_op_error have something concrete to say about this name, or
+# would it fall through to the registry dump? Call sites that have a BETTER
+# story for an unrepairable name (a bare identifier is far likelier to be a
+# column than a mistyped verb) use this to choose which error to raise.
+op_is_repairable(fname::Symbol) =
+    in(fname, SafeModifiers) ||
+    haskey(SafeOps, squash(fname)) ||
+    haskey(ForeignSpellings, squash(fname)) ||
+    nearest(string(fname), vcat(listops(), collect(SafeModifiers))) !== nothing
+
+# ---- call-shape validation --------------------------------------------------
+# Arity and keyword-name mistakes used to parse cleanly and then surface as a
+# raw MethodError from inside a group-by -- with no mention of the spec that
+# caused it. Both are decidable at parse time from the registered function's
+# own method table, so they are decided here.
+
+# positional-arity envelope of a registered function. A bcast-wrapped op (or
+# any `(args...)` closure) reports no upper bound and is therefore never
+# rejected: the check fires only when NO method could accept the given count.
+# The envelope is read off the LIVE method table, so it widens when the host
+# session loads a package that extends the name (StatsBase gives `sum` and
+# `quantile` weighted methods). That is correct -- the registry holds the
+# function object, so those methods really are callable from a spec.
+function arity_range(f)
+    lo, hi, va = typemax(Int), 0, false
+    for m in methods(f)
+        n = m.nargs - 1                  # nargs counts the function itself
+        if m.isva
+            va = true
+            n -= 1
+        end
+        lo = min(lo, n)
+        hi = max(hi, n)
+    end
+    lo == typemax(Int) && return (0, typemax(Int))   # no methods: do not guess
+    (lo, va ? typemax(Int) : hi)
+end
+
+# a readable signature for THIS package's verbs, whose argument names are
+# written for a reader (topnames(name, measure, n)). Base's are terse
+# internals (sum's widest method is `sum(f, a)`) and would mislead, so the
+# hint stops at the module boundary.
+function usage_hint(fname::Symbol, f)
+    best, bestn = nothing, -1
+    for m in methods(f)
+        (m.module === @__MODULE__) || continue
+        n = m.nargs - 1 - (m.isva ? 1 : 0)
+        n > bestn || continue
+        names = Base.method_argnames(m)[2:end]
+        all(x -> !occursin('#', string(x)), names) || continue
+        best, bestn = names, n
+    end
+    best === nothing ? "" : " -- " * string(fname) * "(" * join(best, ", ") * ")"
+end
+
+function check_arity(what::String, fname::Symbol, op, n::Int)
+    lo, hi = arity_range(op)
+    lo <= n <= hi && return nothing
+    expected = lo == hi ? string(lo) :
+               hi == typemax(Int) ? "at least " * string(lo) :
+               string(lo) * " to " * string(hi)
+    hint = usage_hint(fname, op)
+    if isempty(hint) && n == 0
+        hint = lo == 1 ? " -- name the column it works on, e.g. '" *
+                         string(fname) * "(sales)'" :
+                         " -- name the columns it works on"
+    end
+    error(what * ": '" * string(fname) * "' takes " * expected *
+          (lo == 1 && hi == 1 ? " positional argument, got " :
+           " positional arguments, got ") * string(n) * hint *
+          ". (Options go in keyword form: f(x, opt = value).)")
+end
+
+# the keyword names a registered function accepts, or `nothing` when it
+# forwards arbitrary keywords (bcast wrappers, discretize's formatter passthrough)
+# and no useful check is possible
+function op_kwargs(f)
+    accepted = Symbol[]
+    for m in methods(f)
+        for k in Base.kwarg_decl(m)
+            endswith(string(k), "...") && return nothing
+            in(k, accepted) || push!(accepted, k)
+        end
+    end
+    sort!(accepted)
+end
+
+function check_kwargs(what::String, fname::Symbol, op, kws::Vector{Symbol})
+    isempty(kws) && return nothing
+    accepted = op_kwargs(op)
+    accepted === nothing && return nothing
+    for k in kws
+        in(k, accepted) && continue
+        isempty(accepted) && error(
+            what * ": '" * string(fname) * "' takes no keyword options, got '" *
+            string(k) * "'")
+        error(what * ": '" * string(fname) * "' has no keyword option '" *
+              string(k) * "'" * didyoumean(k, accepted) * ". Accepted: " *
+              join(accepted, ", "))
+    end
+    nothing
 end
 
 # compile a node to a thunk `vals::Tuple -> value`, where vals are the column
@@ -317,6 +534,15 @@ function compile_call(ex::Expr, cols::Vector{Symbol}, what::String)
     fname = ex.args[1]
     if !isa(fname, Symbol)
         if Base.Meta.isexpr(fname, :(.))
+            # `spec.orderby(...)` -- the dotted modifier separator, which this
+            # grammar deliberately does not have (design/glyph-choice.md).
+            # Without this branch it reads as an ordinary qualified name and
+            # the user is told about registerop!, which is not their problem.
+            m = length(fname.args) == 2 && isa(fname.args[2], QuoteNode) ?
+                fname.args[2].value : nothing
+            isa(m, Symbol) && in(m, SafeModifiers) && error(
+                what * ": " * modifier_reminder(m) *
+                ". The separator is '|>' or '∘', never '.'")
             error(what * ": qualified names like '" * string(fname) *
                   "' are not allowed in untrusted specs; hosts can register the " *
                   "function under a plain name with registerop!")
@@ -334,17 +560,34 @@ function compile_call(ex::Expr, cols::Vector{Symbol}, what::String)
         if Base.Meta.isexpr(a, :parameters)      # f(x; k = v) form
             for p in a.args
                 Base.Meta.isexpr(p, :kw) && isa(p.args[1], Symbol) ||
-                    error(what * ": unsupported keyword syntax " * string(p))
+                    error(what * ": '" * string(p) * "' is not a keyword " *
+                          "option -- write options as 'name = value' " *
+                          "(after ';' or ',')")
                 push!(kts, p.args[1] => compile_node(p.args[2], cols, what))
             end
         elseif Base.Meta.isexpr(a, :kw)          # f(x, k = v) form
             isa(a.args[1], Symbol) ||
-                error(what * ": unsupported keyword syntax " * string(a))
+                error(what * ": '" * string(a) * "' is not a keyword option -- " *
+                      "an option name must be a plain word, as in " *
+                      "'rank(x, rev = true)'")
             push!(kts, a.args[1] => compile_node(a.args[2], cols, what))
+        elseif isa(a, QuoteNode) && isa(a.value, Symbol)
+            # The colon flip: in a trusted Expr `:col` IS the column, here a
+            # bare word is. A positional :sym is therefore always the DataFrames
+            # habit leaking through -- it would compile to a Symbol constant and
+            # die at apply time with a MethodError naming neither the spec nor
+            # the colon. (Symbols stay legal as option VALUES and inside a
+            # literal array, both handled elsewhere.)
+            error(what * ": ':" * string(a.value) * "' is a Symbol literal, " *
+                  "which is only an option VALUE here (boundedness = " *
+                  ":boundedbelow). A column is a bare word -- write '" *
+                  string(a.value) * "', without the colon.")
         else
             push!(pts, compile_node(a, cols, what))
         end
     end
+    check_arity(what, fname, op, length(pts))
+    check_kwargs(what, fname, op, Symbol[k for (k, _) in kts])
     if isempty(kts)
         return vals -> op((t(vals) for t in pts)...)
     else
@@ -407,9 +650,8 @@ function compile_grouped(ex::Expr, cols::Vector{Symbol}, what::String)
     end
     isempty(keyargs) && error(what * ": groupby needs at least one key column")
     for a in keyargs
-        isa(a, Union{Number,AbstractString,Char,QuoteNode}) && error(
-            what * ": groupby keys must be columns (or elementwise " *
-            "transforms of columns, e.g. yyyy(t)), got literal " * string(a))
+        isa(a, Union{Number,AbstractString,Char,QuoteNode}) &&
+            groupby_literal_error(what, a)
     end
     kts = Function[compile_node(a, cols, what) for a in keyargs]
     nk = length(kts)
@@ -439,15 +681,32 @@ end
 
 # ---- entry points -----------------------------------------------------------
 
+# Julia's own ParseError is a multi-line block with a caret diagram; the last
+# line carries the actual diagnosis ("extra tokens after end of expression").
+# Lift that out so the rejection stays one line, as a TUI needs.
+function parse_detail(err)
+    msg = isa(err, AbstractString) ? String(err) :
+          isa(err, Base.Meta.ParseError) ? string(err.msg) :
+          sprint(showerror, err)
+    line = last(split(msg, '\n'))
+    i = findlast("── ", line)
+    i === nothing ? strip(line) : strip(line[(last(i)+1):end])
+end
+
 function safe_parse(s::AbstractString, what::String)
     ex = try
         Meta.parse(s)
-    catch
-        error(what * ": cannot parse \"" * s * "\"")
+    catch err
+        detail = parse_detail(err)
+        error(what * ": cannot parse \"" * s * "\"" *
+              (isempty(detail) ? "" : " -- " * detail))
     end
-    ex === nothing && error(what * ": empty spec")
+    ex === nothing && error(
+        what * ": empty spec -- a spec is a call over column names, e.g. " *
+        (what == "parseaggr" ? "\"sum(_)\"" : "\"cumsum(sales)\""))
     if isa(ex, Expr) && ex.head == :incomplete
-        error(what * ": incomplete expression \"" * s * "\"")
+        error(what * ": incomplete expression \"" * s *
+              "\" -- " * parse_detail(ex.args[1]))
     end
     if isa(ex, Expr) && ex.head == :toplevel
         error(what * ": one expression only (no ';') in \"" * s * "\"")
@@ -516,9 +775,7 @@ function peel_modifiers(ex, what::String)
                 elseif isa(s, Vector{Symbol})
                     append!(by, s)
                 elseif isa(a, Union{Number,AbstractString,Char,QuoteNode})
-                    error(what * ": groupby keys must be columns (or " *
-                          "elementwise transforms of columns, e.g. " *
-                          "yyyy(t)), got literal " * string(a))
+                    groupby_literal_error(what, a)
                 elseif Base.Meta.isexpr(a, :vect)
                     error(what * ": groupby's [ ... ] array form only " *
                           "accepts plain column names -- write computed " *
@@ -579,6 +836,18 @@ end
 iscondshape(ex) =
     isa(ex, Expr) && (ex.head == :(&&) || ex.head == :(||) || ex.head == :comparison)
 
+# a spec whose TOP level is not a call. The shape gate runs before the
+# compiler, so without this the tailored SafeRejections wording ("assignment
+# is not allowed", "do-blocks are not allowed") would only ever be reached
+# from a nested position -- `x = 1` at the top level got the generic
+# "must be a function call", which does not name what is wrong.
+function shape_error(what::String, ex, src::String, generic::String)
+    if isa(ex, Expr) && haskey(SafeRejections, ex.head)
+        error(what * ": " * SafeRejections[ex.head] * " (in \"" * src * "\")")
+    end
+    error(what * ": " * generic * ", got \"" * src * "\"")
+end
+
 # checkcols: validate a spec's column references against the columns a host
 # knows to exist (typically propertynames(df)), with did-you-mean repair --
 # the TUI path, where a misspelled column would otherwise surface much later
@@ -591,13 +860,24 @@ iscondshape(ex) =
 byrefs(by) = Symbol[c for k in by for c in (isa(k, Symbol) ? (k,) : k.cols)]
 
 function checkcols(s::Union{SafeAggrSpec,SafeDimSpec}, columns::AbstractVector{Symbol})
-    refs = isa(s, SafeAggrSpec) ? union(setdiff(s.cols, [:_]), first.(s.order)) :
-           union(s.cols, first.(s.order), byrefs(s.by))
-    for c in refs
+    # (column, where it was written) -- naming the modifier matters when a spec
+    # references the same-looking name in two places, and it tells the user
+    # which part of the string to edit
+    refs = Pair{Symbol,String}[]
+    seen = Set{Symbol}()
+    add!(c, origin) = (in(c, seen) || (push!(seen, c); push!(refs, c => origin)))
+    for c in s.cols                        # `_` is the target, not a column
+        (isa(s, SafeAggrSpec) && c === :_) || add!(c, "")
+    end
+    for p in s.order
+        add!(p.first, "orderby ")
+    end
+    isa(s, SafeDimSpec) && foreach(c -> add!(c, "groupby "), byrefs(s.by))
+    for (c, origin) in refs
         if !in(c, columns)
             hint = didyoumean(c, sort(columns))
-            error("checkcols: spec \"" * s.source * "\" references column '" *
-                  string(c) * "', which does not exist" *
+            error("checkcols: spec \"" * s.source * "\" references " * origin *
+                  "column '" * string(c) * "', which does not exist" *
                   (isempty(hint) ? ". Available columns: " *
                                    join(sort(columns), ", ") : hint))
         end
@@ -608,12 +888,32 @@ end
 # repeated parses of the same string return the identical spec object
 const SafeSpecCache = Dict{Tuple{Symbol,String},Any}()
 
+# Every rejection ends by quoting the spec it came from. A host parses many
+# specs per frame (an AggrHints table, the entries of a chain), and "unknown
+# function 'foo'" on its own does not say WHICH one to fix. Applied once at
+# the entry point rather than at the ~40 individual error sites, so it also
+# tags errors raised by shared helpers further down (order entries, verbs).
+const SPEC_CONTEXT_MARK = " [in "
+
+function with_spec_context(f, what::String, src::String)
+    try
+        f()
+    catch e
+        isa(e, ErrorException) || rethrow()
+        occursin(SPEC_CONTEXT_MARK, e.msg) && rethrow()   # already tagged
+        msg = startswith(e.msg, what * ":") ? e.msg : what * ": " * e.msg
+        error(msg * SPEC_CONTEXT_MARK *
+              (what == "parseaggr" ? "aggr\"" : "dim\"") * src * "\"]")
+    end
+end
+
 function parseaggr(
     s::AbstractString;
     columns::Union{Nothing,AbstractVector{Symbol}} = nothing,
 )
     spec = get!(SafeSpecCache, (:aggr, String(strip(s)))) do
-        parseaggr_impl(String(strip(s)))
+        src = String(strip(s))
+        with_spec_context(() -> parseaggr_impl(src), "parseaggr", src)
     end::SafeAggrSpec
     # validated per call, outside the cache: the same spec may be checked
     # against different frames
@@ -643,12 +943,25 @@ function parseaggr_impl(src::String)
         "not a fixed row-order key. Order by a real column instead.",
     )
     if isa(ex, Symbol)                   # aggr"sum" -- bare registered name
-        haskey(SafeOps, ex) || unknown_op_error("parseaggr", ex)
+        if !haskey(SafeOps, ex)
+            ex === :_ && error(
+                "parseaggr: '_' names the aggregation target column, it is " *
+                "not itself an aggregation -- reduce it: \"sum(_)\", " *
+                "\"mean(_)\", \"last(_) |> orderby(date)\"")
+            # a lone word that repairs to nothing is far likelier to be a
+            # column than a mistyped verb -- say the useful thing
+            op_is_repairable(ex) || error(
+                "parseaggr: '" * string(ex) * "' is a column reference, not " *
+                "an aggregation -- reduce it (\"sum(" * string(ex) * ")\"), " *
+                "or use '_' to mean whichever column the spec is applied to " *
+                "(\"sum(_)\")")
+            unknown_op_error("parseaggr", ex)
+        end
         ex = Expr(:call, ex, :_)         # lower to sum(_), like trusted :sum
     end
     isa(ex, Expr) && (ex.head == :call || iscondshape(ex)) ||
-        error("parseaggr: spec must be a function call or a registered " *
-              "function name, got \"" * src * "\"")
+        shape_error("parseaggr", ex, src,
+                    "spec must be a function call or a registered function name")
     desugar_where!(ex, "parseaggr")
     cols = Symbol[]
     thunk = compile_node(ex, cols, "parseaggr")
@@ -661,7 +974,8 @@ function parsedim(
     columns::Union{Nothing,AbstractVector{Symbol}} = nothing,
 )
     spec = get!(SafeSpecCache, (:dim, String(strip(s)))) do
-        parsedim_impl(String(strip(s)))
+        src = String(strip(s))
+        with_spec_context(() -> parsedim_impl(src), "parsedim", src)
     end::SafeDimSpec
     # validated per call, outside the cache: the same spec may be checked
     # against different frames
@@ -681,15 +995,16 @@ function parsedim_impl(src::String)
                   "([:region, :" * src * "]); a dim spec computes something, " *
                   "e.g. \"cumsum(" * src * ")\"")
         end
-        error("parsedim: spec must be a function call (e.g. \"cumsum(sales)\"), got \"" *
-              src * "\"")
+        shape_error("parsedim", ex, src,
+                    "spec must be a function call (e.g. \"cumsum(sales)\")")
     end
     desugar_where!(ex, "parsedim")
     cols = Symbol[]
     thunk = compile_node(ex, cols, "parsedim")
     in(:_, cols) &&
-        error("parsedim: '_' is the aggregation target placeholder and has " *
-              "no meaning in a dim spec")
+        error("parsedim: '_' is the aggregation target placeholder and has no " *
+              "meaning in a dim spec -- a dimension is computed from named " *
+              "columns, so name the one you want (\"cumsum(sales)\")")
     posargs = iscondshape(ex) ? Any[] :
               Any[simple_posarg(a) for a in positional_args(ex)]
     fname = iscondshape(ex) ? Symbol(ex.head) : ex.args[1]

@@ -38,6 +38,35 @@ SQL/dplyr/Spark users type `coalesce` unprompted. With an alias-only registry
 their spelling fails, and the OSA repair cannot rescue a word that isn't in
 the whitelist at all.
 
+### The escape valve: redirect in the error, never in the registry
+
+Borrowed capital only reaches as far as the borrowing goes. A user who types
+`avg`, `nunique`, `ifelse` or `row_number` has a *concept* this package
+supports under a different word, and — being four or more edits away — no way
+to reach it from the rejection. That is the case `ForeignSpellings`
+(`src/safe.jl`) answers: a table of SQL/dplyr/pandas/Excel spellings mapped to
+the local one, consulted **only** when constructing the unknown-operator
+error, keyed by the underscore-stripped lowercased name so `ROW_NUMBER` and
+`rownumber` land together.
+
+This is not a hole in the governing law, and adding an entry is not a step
+toward aliasing:
+
+- the spec still **fails**. Nothing new parses, nothing new is callable, the
+  registry is untouched, and `listops()` is unchanged. Vocabulary portability
+  across the colon flip is exactly as it was.
+- it is the same friendliness the law already assigns to *documentation*,
+  delivered at the moment of failure instead of in a file the user is not
+  reading. A rejection that names the local spelling teaches the vocabulary;
+  an alias would let the user never learn it.
+- it is the only mechanism that scales to *declined* spellings. `ifelse` and
+  `unique` are in the deliberately-unregistered table below precisely because
+  registering them would be wrong — but "wrong to register" is not "wrong to
+  explain", and the redirect is how the reason reaches whoever typed it.
+
+The rule for the table: an entry must name a spelling a real system uses for
+the same concept, and its advice must be a spec the grammar accepts today.
+
 ## Naming conventions, and their sanctioned exceptions
 
 - **Data positional, options keyword.** `topnames(District, TestScr, 5)`
@@ -270,3 +299,7 @@ Status: accepted as-is, same posture as the residual gap above.
    `test/safe-aggr.jl` / `test/safe-dim.jl` in the same change. The
    `DefaultSafeOps` snapshot and the docs-sync testset turn a forgotten doc
    update into a test failure.
+8. If it is declined, or ships under a different name than the one a user is
+   likely to type: add the foreign spelling to `ForeignSpellings` so the
+   rejection carries the reason. Declining a name and leaving its typist with
+   the registry dump is only half the decision.

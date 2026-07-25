@@ -24,24 +24,42 @@ function orderentry(p::Pair{Symbol,Symbol})
     elseif p.second == :desc
         p.first => true
     else
-        error("order direction must be :asc or :desc, got " * string(p.second))
+        error("order direction must be :asc or :desc, got '" *
+              string(p.second) * "' (on column '" * string(p.first) * "')" *
+              didyoumean(p.second, [:asc, :desc]))
     end
 end
 orderentry(s::AbstractString) = orderentry_parsed(Meta.parse(s))
-orderentry(x) = error("cannot interpret order entry " * string(x))
+orderentry(x) = error(
+    "cannot interpret order entry " * string(x) * " -- an entry is a column " *
+    "(:date), or a column with a direction (:date => :desc)")
 
 # interpret a *literal* parsed order entry -- no eval
 function orderentry_parsed(ex)
-    if isa(ex, Symbol)
-        return ex => false
-    elseif isa(ex, QuoteNode) && isa(ex.value, Symbol)
-        return ex.value => false
+    if isa(ex, Symbol) || (isa(ex, QuoteNode) && isa(ex.value, Symbol))
+        s = isa(ex, Symbol) ? ex : ex.value
+        # SQL/pandas habit: `orderby(date, :desc)` reads as two COLUMNS here,
+        # and would silently sort by a phantom `desc` column (or fail much
+        # later, at the frame). The direction belongs to its column.
+        if s === :asc || s === :desc
+            error("'" * string(s) * "' is a sort direction, not a column -- " *
+                  "attach it to the column it sorts: orderby(col => :" *
+                  string(s) * ")" *
+                  (s === :asc ? " (ascending is already the default)" : "") *
+                  ". If '" * string(s) * "' really is a column name, spell the " *
+                  "direction too: " * string(s) * " => :asc")
+        end
+        return s => false
     elseif Base.Meta.isexpr(ex, :call, 3) && ex.args[1] == :(=>)
         col = literal_symbol(ex.args[2])
         dir = literal_symbol(ex.args[3])
         return orderentry(col => dir)
     end
-    error("cannot interpret order entry " * string(ex))
+    Base.Meta.isexpr(ex, :vect) && error(
+        "orderby takes its columns as separate arguments, not an array -- " *
+        "write orderby(" * join(string.(ex.args), ", ") * ")")
+    error("cannot interpret order entry " * string(ex) * " -- an entry is a " *
+          "column (date), or a column with a direction (date => :desc)")
 end
 
 function literal_symbol(x)

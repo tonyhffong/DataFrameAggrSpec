@@ -98,7 +98,7 @@ smdf() = DataFrame(
                     "duplicate groupby")
     @test modreject(parsedim, "mean(x) |> groupby()", "at least one column")
     @test modreject(parsedim, "mean(x) |> groupby([])", "at least one column")
-    @test modreject(parsedim, "mean(x) |> groupby(3)", "got literal")
+    @test modreject(parsedim, "mean(x) |> groupby(3)", "got the literal 3")
     @test modreject(parsedim, "mean(x) |> groupby([yyyymm(date)])", "array form")
     # top-level grouped reduction in an aggr spec: one value per key is not an
     # aggregate -- the error teaches the nested composite form
@@ -108,7 +108,7 @@ smdf() = DataFrame(
     @test modreject(parseaggr, "mean(sum(_) |> orderby(year))",
                     "ordered by their groupby keys")
     @test modreject(parseaggr, "mean(sum(_) |> groupby())", "at least one key")
-    @test modreject(parseaggr, "mean(sum(_) |> groupby(3))", "got literal")
+    @test modreject(parseaggr, "mean(sum(_) |> groupby(3))", "got the literal 3")
     @test modreject(parseaggr, "mean(sum(_) |> groupby(k = v))",
                     "not keyword arguments")
     @test modreject(parseaggr, "mean(sum(_) |> groupby(a) |> groupby(b))",

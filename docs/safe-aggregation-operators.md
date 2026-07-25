@@ -14,8 +14,11 @@ column.
 ## Grammar recap
 
 - bare identifier = **column** (`wt`, `EnrlTot`); **`_`** = the target column
-- `:sym` = a Symbol option value; literals: numbers, strings, `true`/`false`,
-  `[ ... ]` arrays
+- `:sym` = a Symbol option *value*, and only that — a positional `:col` is
+  rejected with a pointer to the bare spelling, since the colon means the
+  opposite of what it means in a trusted `Expr`. Literals: numbers, strings,
+  `true`/`false`, `[ ... ]` arrays (a `[:a, :b]` array of Symbols is fine —
+  the restriction is on the argument position, not on Symbols)
 - kwargs in either form: `f(x, k = v)` or `f(x; k = v)`
 - a bare registered name is shorthand for applying it to the target:
   `aggr"sum"` ≡ `aggr"sum(_)"`

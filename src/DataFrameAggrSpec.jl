@@ -58,12 +58,20 @@ include("safe.jl")        # UNTRUSTED whitelist DSL: aggr"..." / dim"..." (needs
 include("dimension.jl")   # WindowDim / PivotDim dimensioning engine
 include("chain.jl")       # chains: left-context pivot lists + dimspec
 include("pivot.jl")       # hints-driven grouped aggregation
+include("templates.jl")   # PROACTIVE suggestion: starter templates + completion
+                          # vocabulary (needs SafeOps/SafeModifiers + the spec
+                          # structs -- keep after safe.jl)
 
 # Public runtime-spec API
 export liftAggrSpecToFunc, defaultAggr
 # Untrusted whitelist DSL
 export SafeAggrSpec, SafeDimSpec, parseaggr, parsedim, @aggr_str, @dim_str
 export registerop!, registerclassifier!, listops, checkcols
+# Spec suggestion: proactive (templates / completion vocabulary, templates.jl)
+# and the structural rendition of a parsed spec a host echoes back. The
+# after-the-fact half (did-you-mean) reaches users through parser errors.
+export spec_templates, spec_vocabulary, specsummary, specfields
+export spec_columns, spec_coltype
 # Aggregation hints + the two chain verbs (dim adds columns, agg reduces)
 export AggrHints, resolveaggr, aggrvalue, agg
 # Dimensioning -- chains are the only public entry; the window/pivot kinds and

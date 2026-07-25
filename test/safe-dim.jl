@@ -293,9 +293,16 @@ end
     @test dims[1] isa PivotDim
     @test dims[1].by == [:District] && dims[1].context == [:County]
 
-    # the old 3rd-argument form is gone: it parses as a window dim whose kernel
-    # then fails at the verb (no such method)
-    @test_throws MethodError dim(df, [:bad => dim"quantiles(TestScr, [.5], [District])"])
+    # the old 3rd-argument form is gone, and the parser says so directly:
+    # arity is checked against the verb's method table at parse time, so this
+    # no longer waits to become a MethodError inside the kernel
+    @test_throws ErrorException dim"quantiles(TestScr, [.5], [District])"
+    err = try
+        parsedim("quantiles(TestScr, [.5], [District])")
+    catch e
+        e
+    end
+    @test occursin("takes 1 to 2 positional arguments, got 3", err.msg)
 end
 
 @testset "Boolean operators (&&, ||, !)" begin

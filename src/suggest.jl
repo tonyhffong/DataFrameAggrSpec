@@ -25,15 +25,29 @@ function osa_distance(a::AbstractString, b::AbstractString)
     d[la+1, lb+1]
 end
 
+# does this token read as a name (column, operator word) rather than punctuation?
+isidenttoken(s::AbstractString) =
+    !isempty(s) && (isletter(first(s)) || first(s) == '_')
+
 # Nearest candidate within an edit budget scaled to the token length (1 edit
 # for short tokens, 2 from 4 chars up); `nothing` when no candidate is close
 # enough. Case-insensitive match, canonical spelling returned. Ties resolve to
 # the first candidate, so pass candidates sorted for determinism.
+#
+# Two guards keep the repair from being noise rather than help, both learned
+# from the operator registry (which holds words and punctuation side by side):
+#   * tokens under 2 characters get NO repair -- at that length nearly every
+#     short candidate is one edit away, so `_` "repairs" to `!`
+#   * a candidate must have the same SHAPE as the token -- a word never repairs
+#     to a punctuation operator, and vice versa (`n` to `!`)
 function nearest(tok::AbstractString, candidates)
     t = lowercase(tok)
-    maxd = length(t) >= 4 ? 2 : 1
+    maxd = length(t) >= 4 ? 2 : length(t) >= 2 ? 1 : 0
+    maxd == 0 && return nothing
+    word = isidenttoken(t)
     best, bestd = nothing, maxd + 1
     for c in candidates
+        isidenttoken(string(c)) == word || continue
         dist = osa_distance(t, lowercase(string(c)))
         dist < bestd && ((best, bestd) = (c, dist))
     end
