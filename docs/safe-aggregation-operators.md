@@ -125,6 +125,9 @@ aggr"first(_) |> orderby(region, date)"      # multi-key: date ties broken by re
 - `groupby` is **not** legal here — a grouped reduction yields one value per
   key, not one value, so it must be nested inside a reduction; see Composite
   aggregation, below.
+- `_` is **not** a legal orderby key (`aggr"... |> orderby(_)"` is a
+  parse-time error) — order by a real column instead. Rationale:
+  `design/expressiveness.md`.
 
 ## Composite aggregation (nested `groupby`)
 
@@ -171,11 +174,6 @@ aggr"last(sum(_) |> groupby(year))"      # the LATEST year's total
   # inner first(_) falls back to unspecified frame order, same as any
   # order-sensitive verb used bare.
   ```
-
-  `_` itself has no meaning inside `orderby(...)` — it names the
-  aggregation target, bound to a real column only when the spec is applied
-  (the same spec can target different columns), not a fixed row-order key —
-  `aggr"... |> orderby(_)"` is a parse-time error. Order by a real column.
 
 ## Elementwise math (usable inside reductions)
 

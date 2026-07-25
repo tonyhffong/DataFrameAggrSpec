@@ -223,6 +223,33 @@ than overloading either existing one.
 Status: accepted as-is. Recorded so it is recognized as a known boundary
 rather than mistaken for a bug.
 
+## `orderby` on aggregation specs: why `_` cannot be an orderby key
+
+`orderby` extended to aggregation specs (`aggr"first(_) |> orderby(date)"` —
+sort the group's rows before the reduction runs) reuses the exact
+`orderby(cols...)` grammar dim specs already had, per "reuse a kwarg name
+across verbs that mean the same thing" above — no new vocabulary. `groupby`
+was deliberately **not** extended the same way: a grouped reduction yields
+one value per key, not one value, so it stays the nested composite-reduction
+feature (`inner |> groupby(keys...)`), never a top-level aggregation-spec
+modifier.
+
+`_` is rejected as an orderby key (`aggr"... |> orderby(_)"` errors at parse
+time) rather than silently doing something. Inside a spec's *body*, `_` is
+substituted for whatever real column the spec is applied to
+(`liftAggrSpecToFunc(c, s)` binds it to `c`) — but the same `SafeAggrSpec`
+value is routinely reused across *different* target columns (that is the
+whole point of `_`: one spec, applied via `AggrHints`/`cols` to many
+columns). `orderby`'s keys, by contrast, are resolved once against the real
+frame, independent of which column the spec happens to be applied to.
+"Order by the target column" has no fixed referent under that reuse, so
+there is no correct substitution to fall back to — reject it outright rather
+than pick an arbitrary one (or worse, let it fail downstream with a raw
+`ArgumentError: column name :_ not found`, which is what happened before this
+was guarded at parse time).
+
+Status: accepted as-is, same posture as the residual gap above.
+
 ## Checklist for a proposed operator or grammar change
 
 1. Does it wrap a Base/stdlib function? Then it keeps that function's name.
