@@ -148,6 +148,16 @@ struct SafeAggrSpec
     fname::Symbol           # top-level function name
     f::Function             # (colvec1, colvec2, ...) -> value; arg order = cols
     cols::Vector{Symbol}    # first-encounter order; may contain :_
+    order::Vector{Pair{Symbol,Bool}}  # from a peeled `|> orderby(cols...)`;
+                                      # sort the group's rows before f runs --
+                                      # order-sensitive verbs (first, last, ...)
+                                      # need it, order-insensitive ones (sum,
+                                      # mean, ...) silently ignore it, same as
+                                      # rank/denserank/tiedrank do on the dim
+                                      # side. A top-level `groupby` is still
+                                      # rejected (see parseaggr_impl) -- that
+                                      # stays the nested-composite-reduction
+                                      # feature.
 end
 
 # a `groupby(...)` key that is a COMPUTED expression rather than a bare
@@ -573,7 +583,7 @@ iscondshape(ex) =
 byrefs(by) = Symbol[c for k in by for c in (isa(k, Symbol) ? (k,) : k.cols)]
 
 function checkcols(s::Union{SafeAggrSpec,SafeDimSpec}, columns::AbstractVector{Symbol})
-    refs = isa(s, SafeAggrSpec) ? setdiff(s.cols, [:_]) :
+    refs = isa(s, SafeAggrSpec) ? union(setdiff(s.cols, [:_]), first.(s.order)) :
            union(s.cols, first.(s.order), byrefs(s.by))
     for c in refs
         if !in(c, columns)
@@ -604,14 +614,20 @@ end
 
 function parseaggr_impl(src::String)
     ex = safe_parse(src, "parseaggr")
-    if ismodifiershape(ex) && (ismodifiercall(ex.args[2]) || ismodifiercall(ex.args[3]))
-        error("parseaggr: a top-level modifier is a dimension-spec feature; " *
-              "an aggregation spec must reduce to ONE value, and a grouped " *
-              "reduction yields one value per key -- NEST it in a reduction " *
-              "instead: \"mean(sum(_) |> groupby(year))\". (orderby has no " *
-              "aggregation form; ordering happens in the dim/agg call " *
-              "around the spec)")
-    end
+    # orderby IS a legal top-level modifier here (sort the group's rows
+    # before the reduction runs -- see SafeAggrSpec.order); groupby is not
+    # (an aggregation spec must reduce to ONE value, and a grouped reduction
+    # yields one value per key -- that stays the NESTED composite form).
+    # Reuse the exact same peeling dim specs use, rather than a parallel
+    # implementation.
+    (ex, order, by) = peel_modifiers(ex, "parseaggr")
+    isempty(by) || error(
+        "parseaggr: a top-level groupby modifier is a dimension-spec " *
+        "feature; an aggregation spec must reduce to ONE value, and a " *
+        "grouped reduction yields one value per key -- NEST it in a " *
+        "reduction instead: \"mean(sum(_) |> groupby(year))\". (orderby IS " *
+        "allowed at the top level: \"first(_) |> orderby(date)\")",
+    )
     if isa(ex, Symbol)                   # aggr"sum" -- bare registered name
         haskey(SafeOps, ex) || unknown_op_error("parseaggr", ex)
         ex = Expr(:call, ex, :_)         # lower to sum(_), like trusted :sum
@@ -623,7 +639,7 @@ function parseaggr_impl(src::String)
     cols = Symbol[]
     thunk = compile_node(ex, cols, "parseaggr")
     fname = iscondshape(ex) ? Symbol(ex.head) : ex.args[1]
-    SafeAggrSpec(src, fname, (vs...) -> thunk(vs), cols)
+    SafeAggrSpec(src, fname, (vs...) -> thunk(vs), cols, order)
 end
 
 function parsedim(
@@ -685,6 +701,16 @@ function liftAggrSpecToFunc(c::Symbol, s::SafeAggrSpec)
     end
     f = s.f
     cols = s.cols
-    ret = (_df_::AbstractDataFrame) -> f((_df_[!, col === :_ ? c : col] for col in cols)...)
+    order = s.order
+    ret = (_df_::AbstractDataFrame) -> begin
+        # order-sensitive verbs (first, last, ...) need a defined row order
+        # within the group; order-insensitive ones (sum, mean, ...) just sort
+        # for nothing -- same tradeoff WindowDim already accepts for rank/
+        # denserank/tiedrank. order_indices (dimension.jl) is a no-op when
+        # s.order is empty.
+        d2 = isempty(order) ? _df_ :
+             view(_df_, order_indices(_df_, 1:nrow(_df_), order), :)
+        f((d2[!, col === :_ ? c : col] for col in cols)...)
+    end
     DataFrameAggrCache[(c, s)] = ret
 end

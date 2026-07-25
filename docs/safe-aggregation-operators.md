@@ -26,6 +26,10 @@ column.
   `aggr"where(sum(_) > 100)"` labels it — the labels default to the condition
   text (see the `where` entry in
   [safe-dimension-operators.md](safe-dimension-operators.md))
+- a top-level `|> orderby(cols...)` modifier sorts the group's rows before
+  the spec runs (see Ordering, below); `|> groupby(...)` is a dimension-spec
+  feature and stays rejected at the top level — nest it instead (see
+  Composite aggregation, below)
 
 ## Reductions
 
@@ -90,6 +94,37 @@ aggr"std(_) / mean(_)"             # coefficient of variation
 | `+` `-` `*` `/` `^` | arithmetic, elementwise when an argument is a column (dotted spellings `.+` `.-` `.*` `./` `.^` are aliases) |
 | `==` `!=` `<` `<=` `>` `>=` `≠` `≤` `≥` | comparisons, elementwise; combine with `count` (dotted spellings are aliases) |
 | `in` `∈` `∉` | membership test, `x in [1, 2, 5]` (`∈` is a Unicode alias for `in`; `∉` negates) — the item broadcasts elementwise, the collection (literal array or a column) is compared as a WHOLE, not zipped against the item | `aggr"count(_ in [1, 2, 5])"` |
+
+## Ordering (`orderby`)
+
+`first`/`last` (and any future order-sensitive verb) depend on the row order
+within the group. The postfix `orderby(cols...)` modifier — the same one dim
+specs use (`docs/safe-dimension-operators.md`) — sorts the group's rows by
+these keys **before** the reduction runs:
+
+```julia
+aggr"first(_) |> orderby(date)"              # earliest value of _
+aggr"last(_) |> orderby(date)"               # latest value of _
+aggr"first(_) |> orderby(date => :desc)"     # direction, same grammar as dim's orderby
+aggr"first(_) |> orderby(region, date)"      # multi-key: date ties broken by region
+```
+
+- **Value at an extremum, directly:** `aggr"last(_) |> orderby(t)"` reads as
+  "the value of `_` at the maximum `t`" (e.g. price at the latest date) — the
+  direct spelling for the common arg-max case. The nested-`groupby` form
+  below is for genuine two-stage reductions (aggregating a *measure* per
+  subgroup, then reducing again across subgroups), which `orderby` cannot
+  express.
+- **A no-op on order-insensitive verbs.** `aggr"sum(_) |> orderby(date)"`
+  parses and runs fine; sorting the group changes nothing about a sum — the
+  same tradeoff `rank`/`denserank`/`tiedrank` already accept from a stray
+  `orderby` on the dimension side.
+- **Ties** are broken by a stable sort: rows tied on every listed key keep
+  their original relative order. Add a tie-breaking key
+  (`orderby(date, id)`) for a fully determined answer.
+- `groupby` is **not** legal here — a grouped reduction yields one value per
+  key, not one value, so it must be nested inside a reduction; see Composite
+  aggregation, below.
 
 ## Composite aggregation (nested `groupby`)
 

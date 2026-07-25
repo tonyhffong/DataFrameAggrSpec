@@ -180,8 +180,9 @@ end
     @test msg(() -> parsedim("cumsum(x) |> orderby"), "takes columns")
     @test msg(() -> parsedim("cumsum(x) |> groupb"), "did you mean 'groupby'?")
 
-    # aggr specs remind that modifiers belong to dim specs
-    @test msg(() -> parseaggr("sum(_) |> orderby(d)"), "dimension-spec")
+    # aggr specs reject a top-level groupby (dimension-spec-only feature);
+    # orderby IS legal there -- see test/safe-modifiers.jl for its behavior
+    @test msg(() -> parseaggr("sum(_) |> groupby(g)"), "dimension-spec")
 
     # dim-spec shape errors explain the chain grammar
     @test msg(() -> parsedim("sales"), "chain KEY")

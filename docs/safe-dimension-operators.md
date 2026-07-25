@@ -175,6 +175,11 @@ function calls, and their names (`orderby`, `groupby`) are reserved —
 equivalent is `dimspec(spec; order = ..., by = ..., kind = ...)` — specifying
 the same option both ways is an error.
 
+`orderby` (not `groupby`) is also legal at the top level of an **aggregation**
+spec — `aggr"first(_) |> orderby(date)"` — where it sorts the group's rows
+before the reduction runs. See "Ordering (`orderby`)" in
+[safe-aggregation-operators.md](safe-aggregation-operators.md).
+
 **`orderby(cols...)`** — window ordering:
 
 ```julia

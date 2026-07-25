@@ -79,8 +79,17 @@ smdf() = DataFrame(
     @test modreject(parsedim, "cumsum(sales) |> foo(x)",
                     "expected a modifier call")
     @test modreject(parsedim, "sum(a |> b)", "attaches a groupby")  # nested, non-modifier rhs
-    @test modreject(parseaggr, "sum(_) |> orderby(date)",
-                    "dimension-spec feature")
+
+    # orderby IS legal at an aggr spec's top level (unlike groupby, below) --
+    # peeled with the SAME peel_modifiers dim specs use
+    s = parseaggr("first(_) |> orderby(date)")
+    @test s.order == [:date => false]
+    @test s.fname == :first && s.cols == [:_]
+    @test parseaggr("first(_) |> orderby(date => :desc)").order == [:date => true]
+    @test parseaggr("first(_) |> orderby(region, date)").order ==
+          [:region => false, :date => false]
+    @test modreject(parseaggr, "first(_) |> orderby(date) |> orderby(x)",
+                    "duplicate orderby")
     @test modreject(parsedim, "mean(x) |> groupby(a) |> groupby(b)",
                     "duplicate groupby")
     @test modreject(parsedim, "mean(x) |> groupby()", "at least one column")
@@ -143,6 +152,51 @@ end
     (_, dims) = DataFrameAggrSpec.normalize_chain(
         [:region, :cum => dim"cumsum(sales) |> orderby(date)"])
     @test dependencies(dims[1]) == [:sales, :date]
+end
+
+@testset "orderby on aggregation specs (behavior)" begin
+    # encounter order deliberately does NOT match date order, in either
+    # group -- sorting must be real, not luck (same discipline as the
+    # pivot-orderby tests above)
+    df = DataFrame(region = ["E", "E", "W", "W", "W"],
+                   date   = [2, 1, 3, 1, 2],
+                   sales  = [20.0, 10.0, 30.0, 5.0, 15.0])
+
+    # first/last respect the DECLARED order, not frame order
+    out = agg(df, :region; cols = [:sales => aggr"first(_) |> orderby(date)" => :early,
+                                    :sales => aggr"last(_) |> orderby(date)" => :late])
+    @test out.early == [10.0, 5.0]    # E: date1 -> 10 ; W: date1 -> 5
+    @test out.late  == [20.0, 30.0]   # E: date2 -> 20 ; W: date3 -> 30
+
+    # descending direction flips which end "first" reads from
+    outd = agg(df, :region;
+               cols = [:sales => aggr"first(_) |> orderby(date => :desc)" => :latest])
+    @test outd.latest == out.late   # same rows as ascending `last`
+
+    # order-insensitive verb: orderby is a silent no-op, not an error
+    outs = agg(df, :region; cols = [:sales => aggr"sum(_) |> orderby(date)" => :total])
+    @test outs.total == [30.0, 50.0]
+
+    # multi-key: a second sort key breaks ties a single key cannot. Frame
+    # order among the date==1 ties is id DESCENDING (id2 before id1), so a
+    # single-key sort (stable) and a two-key sort disagree.
+    df2 = DataFrame(region = ["E", "E", "E"], date = [2, 1, 1], id = [9, 2, 1],
+                    sales = [30.0, 20.0, 10.0])
+    single = agg(df2, :region; cols = [:sales => aggr"first(_) |> orderby(date)" => :x])
+    @test single.x == [20.0]        # date-only: ties keep frame order -> id2's row
+    multi = agg(df2, :region; cols = [:sales => aggr"first(_) |> orderby(date, id)" => :x])
+    @test multi.x == [10.0]         # id breaks the tie -> id1's row
+
+    # direct liftAggrSpecToFunc check against a shuffled frame
+    shuffled = DataFrame(date = [3, 1, 2], sales = [30.0, 10.0, 20.0])
+    fspec = liftAggrSpecToFunc(:sales, aggr"first(_) |> orderby(date)")
+    @test Base.invokelatest(fspec, shuffled) == 10.0
+    lspec = liftAggrSpecToFunc(:sales, aggr"last(_) |> orderby(date)")
+    @test Base.invokelatest(lspec, shuffled) == 30.0
+
+    # columns referenced only via orderby are validated too (checkcols)
+    @test checkcols(aggr"first(_) |> orderby(date)", [:sales, :date]) isa SafeAggrSpec
+    @test_throws ErrorException checkcols(aggr"first(_) |> orderby(dat)", [:sales, :date])
 end
 
 @testset "orderby on pivot dims (group ordering)" begin

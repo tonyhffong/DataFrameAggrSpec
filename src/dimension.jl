@@ -55,6 +55,20 @@ normalize_order(x::Union{AbstractVector,Tuple}) =
     Pair{Symbol,Bool}[orderentry(e) for e in x]
 normalize_order(x) = Pair{Symbol,Bool}[orderentry(x)]
 
+# sort `idxs` (row indices into `df`) by `order` (col => rev pairs);
+# `idxs` unchanged if `order` is empty. Shared by WindowDim's per-partition
+# sort (window_values, below) and aggregation-spec ordering (SafeAggrSpec.order,
+# applied in liftAggrSpecToFunc, safe.jl) -- both are "sort these group rows
+# by these keys before the spec runs," differing only in what runs after.
+function order_indices(df::AbstractDataFrame, idxs::AbstractVector{<:Integer},
+                        order::Vector{Pair{Symbol,Bool}})
+    isempty(order) && return idxs
+    ocols = [p.first for p in order]
+    revs = [p.second for p in order]
+    perm = sortperm(df[idxs, ocols], ocols, rev = revs)
+    idxs[perm]
+end
+
 tosyms(x::Symbol) = Symbol[x]
 tosyms(x::AbstractString) = Symbol[Symbol(x)]
 tosyms(x::Union{AbstractVector,Tuple}) = Symbol[Symbol(e) for e in x]
@@ -154,13 +168,7 @@ function window_values(df::AbstractDataFrame, d::WindowDim)
     out = Vector{Any}(undef, n)
     kernelf, cols = isa(d.spec, Function) ? (d.spec, Symbol[]) : kernel(d.spec)
     for idxs in partition_indices(df, d.by)
-        ridx = idxs
-        if !isempty(d.order)
-            ocols = [p.first for p in d.order]
-            revs = [p.second for p in d.order]
-            perm = sortperm(df[idxs, ocols], ocols, rev = revs)
-            ridx = idxs[perm]
-        end
+        ridx = order_indices(df, idxs, d.order)
         # invokelatest: kernels are eval'd at a newer world age than this loop
         if isa(d.spec, Function)
             res = Base.invokelatest(kernelf, view(df, ridx, :))
