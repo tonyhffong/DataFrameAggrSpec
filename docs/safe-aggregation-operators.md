@@ -270,12 +270,20 @@ missing-value tools (see the drop/replace/flag note above).
 Extension is a trusted act done in host code, never via spec strings:
 
 ```julia
-registerop!(:geomean, x -> exp(mean(log.(x))))   # aggr"geomean(_)"
+registerop!(:geomean, x -> exp(mean(log.(x))); shape = :reduce)   # aggr"geomean(_)"
 
 using StatsBase
 registerop!(:Weights, Weights)                   # aggr"mean(_, Weights(wt))"
-# `mean` is already registered; method dispatch does the rest.
+# `mean` is already registered; method dispatch does the rest. No `shape` here
+# on purpose -- a wrapper is not a point on the cardinality axis, and an
+# undeclared operator makes the checks stay silent rather than guess.
 ```
+
+`shape` is what lets the parser reject `aggr"geomean(_)"`-shaped mistakes at
+parse time; see [extending-the-grammar.md](extending-the-grammar.md) for
+choosing it, for the broadcasting an `:elementwise` operator needs, and for
+the degenerate-input convention (`missing`, not a number you cannot stand
+behind).
 
 Host-registered operators are deliberately **not** listed here — this document
 covers only the shipped defaults.

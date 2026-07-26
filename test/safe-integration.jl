@@ -10,6 +10,14 @@ import DataFrameAggrSpec: WindowDim, PivotDim, dependencies   # internals, white
 # chains, dimspec, the trust rule at every public door, and host extension via
 # registerop! / registerclassifier!.
 
+# Top level on purpose: the cache-invalidation testset ADDS a method to this
+# function to check that a registered NAMED function tracks its method table
+# (the host iteration loop). A definition inside the testset would be a local,
+# not a second method. Adding rather than overwriting keeps the suite free of
+# "Method definition overwritten" warnings, and is the same property -- it is
+# also what a package load does to an operator's method table.
+methoditer(x::Int) = "m1"
+
 @testset "integration with hints / dims / chains" begin
     df = DataFrame(
         County = ["C1", "C1", "C1", "C1", "C2", "C2"],
@@ -85,28 +93,45 @@ import DataFrameAggrSpec: WindowDim, PivotDim, dependencies   # internals, white
     # C2 [d4=40, d5=10] (median 25)
     hf = dim(df, [:County, :half => dim"tophalf(District, TestScr)"])
     @test hf.half == ["bottom", "bottom", "top", "bottom", "top", "bottom"]
-    # clearcaches!: re-registering an existing name leaves already-parsed specs
-    # holding a closure over the OLD function -- specs are cached by source
-    # string, and the agg path holds a second cached layer beyond the spec.
-    # This is the REPL/test-file path for host operator development.
+    # REPLACING an operator invalidates the caches automatically. Without this,
+    # a parsed spec keeps running the OLD function -- it holds a closure over
+    # the operator as it was, and the agg path caches a second layer beyond the
+    # parsed spec. Silent wrong answers, in exactly the loop a host uses to
+    # develop an operator.
     registerop!(:ver, x -> "v1"; shape = :reduce)
     @test parseaggr("ver(_)").f([1, 2]) == "v1"
     registerop!(:ver, x -> "v2"; shape = :reduce)
-    @test parseaggr("ver(_)").f([1, 2]) == "v1"      # stale, by construction
-    @test clearcaches!() === nothing
     @test parseaggr("ver(_)").f([1, 2]) == "v2"
-    # ... and it clears the aggregator layer too, which SafeSpecCache alone does not
+    # ... including through the agg path, which SafeSpecCache alone would miss
     vdf = DataFrame(g = ["a", "a"], v = [1.0, 2.0])
     registerop!(:va, x -> "a1"; shape = :reduce)
     @test agg(vdf, [:g]; hints = AggrHints(:v => aggr"va(_)")).v == ["a1"]
     registerop!(:va, x -> "a2"; shape = :reduce)
-    empty!(DataFrameAggrSpec.SafeSpecCache)          # the parsed-spec memo only
-    @test agg(vdf, [:g]; hints = AggrHints(:v => aggr"va(_)")).v == ["a1"]
-    clearcaches!()
     @test agg(vdf, [:g]; hints = AggrHints(:v => aggr"va(_)")).v == ["a2"]
-    # dropping pure memos must not change any answer for unaffected specs
+    # a failed registration changes nothing, so it must not invalidate either
+    @test_throws ErrorException registerop!(:va, identity; shape = :redcue)
+    @test agg(vdf, [:g]; hints = AggrHints(:v => aggr"va(_)")).v == ["a2"]
+
+    # redefining a METHOD on a registered named function needs no
+    # re-registration and no invalidation: the registry stores the GENERIC
+    # FUNCTION, not a snapshot, so dispatch picks the new method up. This is
+    # the host iteration loop docs/extending-the-grammar.md recommends, so it
+    # is pinned. Asserted through invokelatest rather than a direct call: at
+    # a REPL the world advances between statements and the direct call sees
+    # the new method too, but inside this testset body that would be pinning
+    # world-age behaviour rather than the registry's.
+    registerop!(:methoditer, methoditer; shape = :reduce)
+    @test DataFrameAggrSpec.SafeOps[:methoditer] === methoditer
+    @test parseaggr("methoditer(_)").f(1) == "m1"
+    @test_throws MethodError parseaggr("methoditer(_)").f("s")
+    @eval methoditer(x::String) = "m2"            # widen the method table
+    @test Base.invokelatest(parseaggr("methoditer(_)").f, "s") == "m2"
+    @test Base.invokelatest(parseaggr("methoditer(_)").f, 1) == "m1"
+
+    # clearcaches! by hand: for host state a registration cannot see. Dropping
+    # pure memos must never change an answer.
     before = dim(df, [:County, :cum => dim"cumsum(TestScr)"]).cum
-    clearcaches!()
+    @test clearcaches!() === nothing
     @test dim(df, [:County, :cum => dim"cumsum(TestScr)"]).cum == before
 
     registerop!(:Weights, StatsBase.Weights)

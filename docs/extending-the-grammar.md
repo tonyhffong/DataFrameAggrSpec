@@ -16,7 +16,7 @@ about adding to it.
 - [Step 2: make it take a column](#step-2-make-it-take-a-column)
 - [Step 3: decide what a degenerate group returns](#step-3-decide-what-a-degenerate-group-returns)
 - [Classifier verbs (labelling groups)](#classifier-verbs-labelling-groups)
-- [The re-registration trap](#the-re-registration-trap)
+- [Iterating on an operator](#iterating-on-an-operator)
 - [What your operator gets for free](#what-your-operator-gets-for-free)
 - [Checklist before you ship one](#checklist-before-you-ship-one)
 
@@ -248,40 +248,58 @@ Drop the `categorical(...)` and everything still runs — you simply get an
 ordinary string column, which is a legitimate choice if the labels are not
 meant to be a display dimension.
 
-## The re-registration trap
-
-**Registering an operator a second time under the same name does not change
-what already-parsed specs do — including specs parsed from identical text.**
+## Iterating on an operator
 
 Parsed specs are cached by source string, and a cached spec holds a closure
-over the operator as it was at first parse. This bites during exactly the
-loop you use to develop an operator:
+over the operator as it was when the spec was first parsed. Two consequences
+are worth knowing before you develop one in a REPL.
+
+**Redefining a method needs no re-registration.** The registry holds the
+*generic function*, and dispatch happens when the spec runs, so a redefinition
+is picked up immediately — nothing to invalidate:
 
 ```julia
-registerop!(:ver, x -> "v1"; shape = :reduce)
-parseaggr("ver(_)").f([1, 2])          # "v1"   — try it
+myop(x) = "v1"
+registerop!(:myop, myop; shape = :reduce)     # once
+parseaggr("myop(_)").f([1])                   # "v1"
 
-registerop!(:ver, x -> "v2"; shape = :reduce)   # fix the implementation
-parseaggr("ver(_)").f([1, 2])          # "v1"   ← still the old one
-parseaggr("ver( _ )").f([1, 2])        # "v2"   ← different text, cache miss
+myop(x) = "v2"                                # just redefine it
+parseaggr("myop(_)").f([1])                   # "v2"
 ```
 
-Call `clearcaches!()` after re-registering:
+This is the pleasant loop: **register a named function once, then iterate on
+its methods.** Prefer it to re-registering lambdas.
+
+**Replacing an operator clears the caches for you.** Handing `registerop!` a
+*different function object* under an existing name would otherwise strand
+every cached spec that used it, so registration drops the memos itself:
 
 ```julia
-registerop!(:ver, x -> "v2"; shape = :reduce)
-clearcaches!()
-parseaggr("ver(_)").f([1, 2])          # "v2"
+registerop!(:lam, x -> "L1"; shape = :reduce)
+parseaggr("lam(_)").f([1])                    # "L1"
+
+registerop!(:lam, x -> "L2"; shape = :reduce) # a new object -- caches dropped
+parseaggr("lam(_)").f([1])                    # "L2"
 ```
 
-It drops all three memos — parsed specs, lifted aggregators and window kernels
-— which is what you want, since the `agg`/`AggrHints` path holds a second
-cached layer beyond the parsed spec. Everything dropped is a pure memo; the
-next parse or apply recomputes it.
+Registering a **new** name invalidates nothing, so a host package registering
+its vocabulary at load time pays nothing for this: a spec naming an
+unregistered operator cannot have parsed, and failed parses are never cached.
 
-Registering a **new** name is always safe and needs no clearing, so a host
-package that registers once at load time never calls this. It is the REPL,
-test-file and plugin-reload path.
+That leaves one case neither mechanism can see — an operator whose behaviour
+depends on host state it closed over, changed without touching the registry.
+Call `clearcaches!()` explicitly there:
+
+```julia
+threshold = Ref(10)
+registerop!(:over, x -> count(>(threshold[]), x); shape = :reduce)
+threshold[] = 20        # the registry did not change...
+clearcaches!()          # ...so say so
+```
+
+Such an operator is impure and so already outside what registered operators
+may assume (see the checklist below) — `clearcaches!` makes it workable, not
+correct.
 
 In a host package, this rarely matters because registration happens once at
 load time. In a REPL or a test file that re-registers, it matters immediately.

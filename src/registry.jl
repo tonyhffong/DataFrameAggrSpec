@@ -113,11 +113,25 @@ registerop!(:band, (x...) -> broadcast(band, x...); shape = :elementwise)
 
 # Re-registration
 
-Re-registering an existing `name` does **not** affect already-parsed specs,
-including specs re-parsed from identical text — parsed specs are cached by
-source string and hold a closure over the operator as it was. Call
-[`clearcaches!`](@ref) after replacing an operator. Registering a *new* name
-is always safe.
+Replacing an existing `name` drops the package's compilation caches for you,
+since a cached spec holds a closure over the operator as it was. Registering a
+*new* name invalidates nothing (a spec naming an unregistered operator cannot
+have parsed, let alone been cached), so a host registering its vocabulary at
+load time pays nothing.
+
+Note that **redefining a method on an already-registered named function needs
+no re-registration at all** — the registry holds the generic function and
+dispatch happens at call time, so the change is picked up immediately. That is
+the pleasant way to iterate on an operator:
+
+```julia
+myop(x) = ...
+registerop!(:myop, myop; shape = :reduce)   # once
+myop(x) = ...                               # iterate freely
+```
+
+[`clearcaches!`](@ref) remains available for what registration cannot see —
+an operator closing over host state that changed on its own.
 
 ```julia
 using Statistics
@@ -140,7 +154,25 @@ function registerop!(name::Symbol, f::Base.Callable; shape::Symbol = :unknown)
     if in(name, SafeModifiers)
         error("registerop!: '" * s * "' is a reserved modifier name")
     end
-    _register!(name, f, shape)
+    # REPLACING a name strands every cached spec that used it: a parsed spec
+    # holds a closure over the operator as it was, and the agg path caches a
+    # second layer beyond that. Drop the memos so a host never has to know.
+    #
+    # The predicate is exact rather than conservative: a NEW name cannot appear
+    # in any cached spec, because a spec naming an unregistered operator fails
+    # to parse and failures are never cached (`get!` does not store when its
+    # thunk throws). So the common case -- a host registering its vocabulary at
+    # load time -- invalidates nothing.
+    #
+    # This lives in registerop! rather than _register! deliberately. The shipped
+    # registration block calls _register! directly, at LOAD time, before
+    # safe.jl and dimension.jl have defined the caches clearcaches! empties;
+    # registerop! is only ever reached at run time, with the module fully
+    # loaded. Definition versus extension.
+    replacing = haskey(SafeOps, name)
+    r = _register!(name, f, shape)     # may throw on a bad shape: nothing changed
+    replacing && clearcaches!()
+    r
 end
 
 """
@@ -163,27 +195,27 @@ Drop every memoized compilation the package holds: parsed specs
 (`SafeSpecCache`), lifted aggregators (`DataFrameAggrCache`) and window
 kernels (`WindowKernelCache`).
 
-Call this after **re-registering an existing operator name**. Parsed specs are
-cached by source string and hold a closure over the operator as it was at
-first parse, so replacing an operator otherwise leaves already-parsed specs —
-including specs re-parsed from identical text — running the old function:
+Rarely needed: [`registerop!`](@ref) already clears these when it **replaces**
+an existing operator, and redefining a method on an already-registered named
+function is picked up with no invalidation at all. What remains is the case
+neither can see — an operator whose behaviour depends on host state it closed
+over, changed without touching the registry:
 
 ```julia
-registerop!(:myop, v1; shape = :reduce)
-parseaggr("myop(_)").f(x)     # v1
-
-registerop!(:myop, v2; shape = :reduce)
-parseaggr("myop(_)").f(x)     # still v1
-clearcaches!()
-parseaggr("myop(_)").f(x)     # v2
+threshold = Ref(10)
+registerop!(:over, x -> count(>(threshold[]), x); shape = :reduce)
+threshold[] = 20        # the registry did not change...
+clearcaches!()          # ...so say so explicitly
 ```
 
-Registering a **new** name needs no clearing, so a host package that registers
-once at load time never has to call this; it is the REPL, test-file and
-plugin-reload path. Everything dropped is a pure memo — the next parse or
-apply recomputes it, at the cost of that one recompilation.
+Everything dropped is a pure memo — the next parse or apply recomputes it, at
+the cost of that one recompilation. Answers never change as a result, only
+timing.
 
-See `docs/extending-the-grammar.md`.
+Note that an operator like the one above is impure and therefore already
+outside what registered operators may assume (invariant R9,
+`design/composition-rules.md`); `clearcaches!` makes it *workable*, not
+*correct*. See `docs/extending-the-grammar.md`.
 """
 function clearcaches!()
     # runtime-only forward references: SafeSpecCache (safe.jl) and

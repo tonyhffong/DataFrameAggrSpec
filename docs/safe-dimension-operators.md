@@ -328,16 +328,23 @@ member row of the partition).
 Extension is a trusted act done in host code, never via spec strings:
 
 ```julia
-registerop!(:double, x -> 2 .* x)     # dim"double(sales)"
+registerop!(:double, x -> 2 .* x; shape = :elementwise)   # dim"double(sales)"
 
 # pivot verbs need NO registration -- users write `|> groupby(keys...)`:
-registerop!(:hilo, measure -> ...)              # dim"hilo(x) |> groupby(District)"
+registerop!(:hilo, measure -> ...; shape = :map)  # dim"hilo(x) |> groupby(District)"
 
 # register a CLASSIFIER only when the grouping column is DATA in the spec
 # (like topnames, whose 1st argument is the label source):
-registerop!(:tophalf, (name, measure) -> ...)   # labels one value per group
+registerop!(:tophalf, (name, measure) -> ...; shape = :map)  # one label per group
 registerclassifier!(:tophalf, 1)                # argument 1 = the name column
 ```
+
+Two things the one-liners cannot show: an `:elementwise` operator built from a
+*scalar* function needs a broadcasting wrapper you supply yourself
+(`registerop!` wraps nothing), and a classifier's labels need a fixed-width
+rank prefix to sort in the intended order. Both, plus choosing `shape` and the
+degenerate-input convention, are in
+[extending-the-grammar.md](extending-the-grammar.md).
 
 Host-registered operators are deliberately **not** listed here — this document
 covers only the shipped defaults.

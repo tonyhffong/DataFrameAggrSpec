@@ -27,12 +27,12 @@ everything below:
    those is *correct* somewhere else.
 3. **The grammar is deliberately small.** Default-deny (`registry.jl` +
    `compile.jl`) means the set of things a user can type that must be rejected
-   is unbounded, while the set accepted is 88 registry entries and about a
+   is unbounded, while the set accepted is 89 registry entries and about a
    dozen shapes. Guidance is not a courtesy on top of the grammar — it is the
    only thing that makes a whitelist usable by someone who has not read the
    whitelist.
 
-The result: over a hundred `error` sites across `src/`, 57 foreign-spelling
+The result: over a hundred `error` sites across `src/`, 61 foreign-spelling
 redirects, 18 tailored syntax rejections, and a whole file (`templates.jl`) of
 starter specs. That is a lot of code for something that never computes an
 answer. This note is why it earns its place.
@@ -118,7 +118,7 @@ right is evidence. `repair` returns the answer in both currencies at once
 ## The proactive half: narrowing, not enumerating
 
 `spec_templates(kind; coltypes, target, targettype, targetdata)` is not a
-catalogue. A catalogue of 56 named operations × N columns is a wall of text
+catalogue. A catalogue of 57 named operations × N columns is a wall of text
 that helps nobody. The design commitment is that **context narrows the list**:
 
 * **`:aggr` templates are target-scoped.** An aggregation reduces exactly one
@@ -380,7 +380,7 @@ free. Prefer this shape for anything added.
 **G13 — Undeclared means unchecked.**
 A check that lacks its input stays **silent** rather than guessing.
 `check_arity` fires only when no method could accept the count; `check_kwargs`
-bails out entirely when any method forwards `kwargs...` (58 of 88 operators, by
+bails out entirely when any method forwards `kwargs...` (58 of 89 operators, by
 construction — the `bcast` wrappers); `shape_of` treats `:unknown` as
 **absorbing**, so one undeclared verb anywhere silences every shape check. A
 check that is confidently wrong is worse than one that is absent, because the
@@ -496,12 +496,36 @@ change?"* and the table for *"what changed?"*.
 
 The dangerous direction is the quiet one: checks getting *weaker* — a new
 `kwargs...` method, a host verb registered without a shape — fails nothing and
-simply catches less. Such a digest would also be the natural *automatic*
-invalidation key for `SafeSpecCache`, which holds closures over operators a
-later `registerop!` may have replaced. The manual escape hatch now exists —
-`clearcaches!()`, documented in `docs/extending-the-grammar.md` as part of the
-host recipe — so the remaining gap is only that nothing invalidates on its
-own.
+simply catches less.
+
+**This note used to add that such a digest "would also be the natural
+invalidation key for `SafeSpecCache`". That was wrong, and the correction is
+worth keeping, because it separates two problems that read as one.**
+
+*Staleness* — a cached spec holding a closure over a replaced operator — is
+event-driven, locally detectable, and now handled: `registerop!` clears the
+caches when it replaces an existing name, with an exact predicate rather than
+a conservative one (a *new* name cannot appear in any cached spec, since a
+spec naming an unregistered operator fails to parse and failures are never
+cached). `clearcaches!()` remains the manual hatch for host state a
+registration cannot see.
+
+*Session dependence* — `quantile`'s arity envelope widening when StatsBase
+loads — is **not a caching problem at all**, and a digest could not serve as
+its trigger even if it were. There is no event: the registry is untouched
+(`SafeOps[:quantile]` is the identical object before and after), no
+`registerop!` fires, and a method table simply grew. Hooking that would mean
+reaching into `Base.package_callbacks`, exactly the unstable internal G15
+forbids for an advisory feature. Nor is invalidation needed: the checks are
+pure *gates* on acceptance and do not change the compiled closure, so a cached
+success stays valid, and a spec that was rejected was never cached and
+re-parses to the new verdict.
+
+So the digest stays worth building for what it was actually proposed for —
+letting a user see *why* one session accepts what another rejects — as a
+diagnostic they call, not a cache key. As a key it would be actively bad:
+walking every operator's method table on each lookup costs far more than the
+parse it protects.
 
 **3 — Repair and vocabulary internals are unexported** (`nearest`,
 `didyoumean`, `ForeignSpellings`, `registry_summary`). Much less pressing now
@@ -542,7 +566,7 @@ them accidental:
    converges**: an error that says what to type instead is precisely what a
    model needs to self-correct. The rejection ladder is already a repair
    oracle — built for humans, and the right shape by accident.
-2. **`ForeignSpellings` as prompt context.** 57 pairs of "what people say
+2. **`ForeignSpellings` as prompt context.** 61 pairs of "what people say
    elsewhere → what it is called here" enumerate exactly the mistakes a
    SQL/pandas-trained model makes. `SafeRejections` and `expressiveness.md`'s
    deliberately-unregistered table serve the same purpose.
