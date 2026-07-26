@@ -635,13 +635,13 @@ that begins "why doesn't it just…":
   shape it has, and which spellings were declined (`ifelse`, `&`/`|`,
   aliases for Base names). **Read before requesting a new operator.**
 - [user-guidance.md](design/user-guidance.md) — how the package gets an analyst
-  to a spec that parses and means what they wanted: the proactive half
-  (`spec_templates`/`spec_vocabulary`) and the reactive half (the rejection
-  ladder, did-you-mean, `checkcols`) as one system, the rules that keep them
-  from contradicting each other, and the guards that keep either from going
-  stale. **Read before adding an error message or a template.** Also covers
-  the machine-facing direction — using the same parser and diagnostics from a
-  linter, an LSP server, or an LLM that writes specs.
+  to a spec that parses and means what they wanted, as one system: what the
+  guidance knows (the registry, operator shape, repair), the proactive half
+  (`spec_templates`/`spec_vocabulary`), the reactive half (the rejection ladder,
+  did-you-mean, `checkcols`), both output channels (prose and `SpecError`), and
+  the sixteen rules that keep them from contradicting each other. **Read before
+  adding an error message or a template.** Ends with what a consumer — a linter,
+  an LSP server, an LLM that writes specs — can build on the same machinery.
 - [prior-art.md](design/prior-art.md) — how this relates to Elasticsearch
   bucket/metric aggregations, MongoDB `$setWindowFields`, Tableau LOD
   expressions, and DAX calculated columns vs measures.
