@@ -62,9 +62,11 @@ that helps nobody. The design commitment is that **context narrows the list**:
   target's *type family* (`_AGGR_BY_FAMILY`) picks the reducer set — a `Bool`
   column gets `any`/`all`/`count`, not the `Bool <: Number` reducers; a date
   gets `minimum`/`maximum`/`first`/`last`, not `sum`.
-* **Sibling columns gate shapes, not names** (`_aggr_context`). A weighted
-  mean is offered only when *something* is numeric; `|> orderby(…)` only when
-  there is a plausible ordering key.
+* **Sibling columns supply the shapes that need a second column**
+  (`_aggr_sidecols`). A weighted mean is offered only when some other column is
+  numeric, `|> orderby(…)` only when there is a date to order by — and each
+  names the column it found, so the suggestion runs as offered (G8). Gate and
+  name are one decision.
 * **Observed values promote** (`_aggr_datafacts`). Missings present pushes the
   `skipmissing`/`coalesce` variants to the front; a constant or low-cardinality
   column pushes `uniqvalue`/`countuniq`; negatives push the sign predicates.
@@ -206,12 +208,39 @@ text. The did-you-mean names a spelling but does not accept it. Trust and
 vocabulary are unchanged by everything in this note — cf. R5 in
 `design/composition-rules.md` (trust never escalates through composition).
 
-**G8 — Placeholders are honest.**
-Where a template cannot know the real name, it uses an obviously-generic one
-(`wt`, `date`, `year`) and relies on `checkcols` to route the user to the real
-column. The alternative — a plausible-looking wrong name — reads as an
-assertion about the frame. See *Known gaps*, which records where G8 is
-currently paying more than it should.
+**G8 — A suggestion must run on the frame it was offered for.**
+*(Amended 2026-07. This rule previously read "placeholders are honest" and
+required generic names like `wt`/`date`/`year`. That was wrong, and the way it
+was wrong is instructive — see below.)*
+
+When a template needs a second column, it **names a real column of the right
+family**, and it is offered *only* when the frame has one. Gate and name are a
+single decision, so a template can never mention a column family the frame
+lacks. Generic placeholders survive in exactly one place: the context-free
+catalogue (`spec_templates(:aggr)` with no `coltypes`), where there is no frame
+to name from and nothing to check against.
+
+The original rule reasoned that a plausible-looking wrong name "reads as an
+assertion about the frame". True, but it traded a *cosmetic* problem for a
+*functional* one: the placeholder form fails `checkcols` on any frame without a
+column literally called `wt`, so every two-column aggregation suggestion was
+dead on arrival. That directly contradicted the rule the proactive half is
+built on — *a suggestion that errors on the column it was offered for is worse
+than no suggestion*. Two rules disagreed and the weaker one had been winning.
+
+The tell was in the tests, and worth remembering as a review smell: the
+load-bearing "every template runs" testset only passed because its fixture had
+been given columns named `wt`, `wt1`, `wt2`, `date`, `year` and `unit`. **A
+fixture shaped to fit the code under test cannot falsify it.** That fixture now
+uses ordinary names (`weight`, `trade_dt`, `fiscal`, `currency`), and a
+separate assertion checks every offered aggr spec against `checkcols` on that
+same frame — so a placeholder creeping back fails the suite.
+
+Column choice is positional (first sibling of the right family), matching what
+the dim templates have always done. Name-sniffing for `unit`/`currency`, or
+skipping id-like columns, was considered and declined: locale-bound, fragile,
+and the user edits the name anyway. Being *runnable* is the property that
+matters; being the column they would eventually have picked is not.
 
 ## Division of labour: package vs host
 
@@ -314,24 +343,14 @@ check it.
 
 Recorded so they are not rediscovered as bugs.
 
-1. **Aggr placeholders vs dim's real names.** `_dim_templates_for` names the
-   frame's actual columns (`cumsum(sales) |> orderby(trade_dt)`);
-   `_aggr_templates_for` keeps `wt`/`year` even though `_aggr_context` has
-   already inspected the same column list to decide the shape is offerable. On
-   a frame with no column literally named `wt`/`year`, those aggr suggestions
-   fail `checkcols`. The `spec_templates` docstring's claim that did-you-mean
-   "then names the real column" does not hold in practice — `wt` (2 chars,
-   1-edit budget) never repairs to `weight`, and the user gets the full column
-   list instead, which is useful but is not what is documented.
-
-   This is a genuine design question, not an oversight, and was deliberately
-   left open: the counter-argument is in `templates.jl`'s header comment
-   (context *filters* rather than *names*) — but that argument was written
-   about the **target**, and the second column is not the target. Deciding it
-   means deciding whether `_AGGR_WEIGHTED`/`_AGGR_COMPOSITE` should be
-   generated per-frame the way the dim list is. Note the aggr fixture frame in
-   `test/templates.jl` contains columns literally named `wt`/`wt1`/`wt2`/`year`
-   — the test was built to fit the placeholders, so it cannot see this.
+1. ~~**Aggr placeholders vs dim's real names.**~~ **Closed 2026-07** — see the
+   amended G8 above. Aggr templates now name real columns exactly as the dim
+   templates always did, gate and name having become one decision, and the
+   fixture that used to hide the problem has been renamed so it cannot again.
+   The counter-argument recorded here (context should *filter*, not *name*) was
+   written about the **target**, which is still never named — one spec is reused
+   across target columns, so the target stays `_`. It never applied to the
+   second column.
 
 2. **`checkcols` tags its spec differently from everything else.**
    Parser rejections end `[in aggr"…"]`; `checkcols` opens with

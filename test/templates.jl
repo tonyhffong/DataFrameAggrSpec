@@ -15,19 +15,28 @@ using Test
 
 const DFAS = DataFrameAggrSpec
 
-@testset "aggr templates always target `_`, never a named column" begin
+@testset "aggr templates write the TARGET as `_`, never by name" begin
+    # The surviving invariant after gap 1 closed: the *target* is always `_`,
+    # because one spec is reused across target columns. SIBLING columns are a
+    # different matter — those are named for real, so the suggestion runs on the
+    # frame it was offered for rather than failing `checkcols` on a placeholder.
     df = DataFrame(region = ["E", "W"], sales = [1, 2], score = [10.0, 20.0])
-    for t in (spec_templates(:aggr),
-              spec_templates(:aggr; coltypes = df),
-              spec_templates(:aggr; coltypes = df, target = :sales),
-              spec_templates(:aggr; coltypes = df, target = :region,
-                             targetdata = df.region))
+    for (t, tgt) in ((spec_templates(:aggr), nothing),
+                     (spec_templates(:aggr; coltypes = df), nothing),
+                     (spec_templates(:aggr; coltypes = df, target = :sales), "sales"),
+                     (spec_templates(:aggr; coltypes = df, target = :region,
+                                     targetdata = df.region), "region"))
         # every entry reduces the placeholder (or reads the group as a whole)…
         @test all(s -> occursin('_', s) || s in ("countuniq", "nrow"), t)
-        # …and none names a column of the frame
-        @test !any(s -> occursin("sales", s) || occursin("region", s) ||
-                        occursin("score", s), t)
+        # …and none of them names the target column itself
+        tgt === nothing || @test !any(s -> occursin(tgt, s), t)
     end
+
+    # the context-free catalogue has no frame to name from, so it — and only
+    # it — still uses the generic placeholders
+    generic = spec_templates(:aggr)
+    @test "sum(_ * wt) / sum(wt)"    in generic
+    @test "last(_) |> orderby(date)" in generic
 end
 
 @testset "target type picks the reducer set" begin
@@ -64,28 +73,47 @@ end
     df = DataFrame(region = ["E", "W"], date = [Date(2026, 1, 1), Date(2026, 2, 1)],
                    sales = [1, 2], wt = [1.0, 2.0])
     t = spec_templates(:aggr; coltypes = df, target = :sales)
-    # the placeholder name stays generic -- the frame decides offerability only
+    # each shape NAMES the sibling it found, so the suggestion runs as offered
     @test "sum(_ * wt) / sum(wt)"    in t
     @test "last(_) |> orderby(date)" in t
+    # a date group key is coarsened rather than used raw -- which also shows
+    # that a groupby key may be computed
+    @test "mean(sum(_) |> groupby(yyyy(date)))" in t
+    @test "onlyif(isuniform(region), sum(_))"   in t
 
     # a lone numeric column: nothing to weight by, nothing to order by
     t2 = spec_templates(:aggr; coltypes = DataFrame(sales = [1]), target = :sales)
     @test !any(s -> occursin("orderby", s), t2)
-    @test !any(s -> occursin("wt", s), t2)
+    @test !any(s -> occursin("wmeanfallback", s), t2)
+    @test !any(s -> occursin("groupby", s), t2)
+    @test !any(s -> occursin("onlyif", s), t2)
 
-    # a text-only sibling can group but neither weight nor order
+    # a text-only sibling can group and guard, but neither weight nor order
     t3 = spec_templates(:aggr; coltypes = DataFrame(region = ["E"], sales = [1]),
                         target = :sales)
     @test !any(s -> occursin("orderby", s), t3)
-    @test !any(s -> occursin("sum(_ * wt)", s), t3)
-    @test "mean(sum(_) |> groupby(year))" in t3
+    @test !any(s -> occursin("sum(_ *", s), t3)
+    @test "mean(sum(_) |> groupby(region))"   in t3   # no date, so the key is raw
+    @test "onlyif(isuniform(region), sum(_))" in t3
 
-    # the `orderby` gate follows the PLACEHOLDER, not just orderability: the
-    # template names `date`, so a numeric-only frame must not be offered it
+    # gate and name are now ONE decision: a numeric-only frame has no date to
+    # order by and nothing categorical to guard by, so neither shape appears —
+    # which is what stops a template naming a column family the frame lacks
     t4 = spec_templates(:aggr; coltypes = DataFrame(sales = [1], cost = [2.0]),
                         target = :sales)
     @test !any(s -> occursin("orderby", s), t4)
-    @test "sum(_ * wt) / sum(wt)" in t4          # a numeric sibling still weights
+    @test !any(s -> occursin("onlyif", s), t4)
+    @test "sum(_ * cost) / sum(cost)"   in t4       # a numeric sibling still weights
+    @test "wmeanfallback(_, [cost, 1])" in t4       # one candidate + the unweighted fallback
+
+    # ...and two numeric siblings fill the cascade properly
+    t5 = spec_templates(:aggr; coltypes = DataFrame(sales = [1], w1 = [1.0], w2 = [2.0]),
+                        target = :sales)
+    @test "wmeanfallback(_, [w1, w2, 1])" in t5
+
+    # the guard is a MEASURE guard, so it is not offered for a text target
+    @test !any(s -> occursin("onlyif", s),
+               spec_templates(:aggr; coltypes = df, target = :region))
 end
 
 @testset "observed data promotes the specs that match the values" begin
@@ -176,6 +204,9 @@ end
     # under `groupby` the Bool arrives aggregated to a per-group COUNT, so the
     # "any true in this group" test is `> 0` -- `any(active)` would get Ints
     @test "where(active > 0) |> groupby(region)" in b
+    # the row-level guard: blank the measure where the flag is false, as
+    # opposed to `where`, which LABELS the row
+    @test "onlyif(active, sales)" in b
     @test !any(s -> occursin("discretize(active", s), b)
 
     # :dim ignores the aggr-only target context
@@ -266,16 +297,24 @@ end
 end
 
 @testset "every offered template parses AND runs on its target column" begin
-    # the placeholder names are real columns here, so each template can be
-    # lifted and applied end to end -- a template that throws on the very column
-    # it was suggested for is worse than no suggestion
-    df = DataFrame(region = ["E", "W", "E", "W"],
-                   date   = Date(2026, 1, 1):Day(1):Date(2026, 1, 4),
-                   year   = [2026, 2026, 2025, 2025],
-                   sales  = [10, -3, 7, 22],
-                   wt     = [1.0, 2.0, 3.0, 4.0],
-                   wt1    = [1.0, 0.0, 1.0, 1.0],
-                   wt2    = [2.0, 2.0, 2.0, 2.0],
+    # Every template must be liftable and applicable end to end — one that
+    # throws on the very column it was suggested for is worse than no
+    # suggestion.
+    #
+    # NB the column names: NOTHING here is named `wt`/`date`/`year`/`unit`. That
+    # is deliberate. Until gap 1 closed, the aggr templates carried those as
+    # placeholders and this fixture had to be shaped to contain them, which hid
+    # the fact that the suggestions did not run on any *other* frame. Now they
+    # name whatever the frame actually has, so the fixture is free to look like
+    # real data — and if the placeholders ever creep back, this testset fails.
+    df = DataFrame(region   = ["E", "W", "E", "W"],
+                   trade_dt = Date(2026, 1, 1):Day(1):Date(2026, 1, 4),
+                   fiscal   = [2026, 2026, 2025, 2025],
+                   currency = ["USD", "USD", "EUR", "EUR"],
+                   sales    = [10, -3, 7, 22],
+                   weight   = [1.0, 2.0, 3.0, 4.0],
+                   backup   = [1.0, 0.0, 1.0, 1.0],
+                   fallback = [2.0, 2.0, 2.0, 2.0],
                    score  = Union{Missing,Float64}[1.0, missing, 3.0, missing],
                    tag    = Union{Missing,String}["a", missing, "b", "a"],
                    flag   = Union{Missing,Bool}[true, missing, false, true],
@@ -300,9 +339,21 @@ end
         @test spec isa SafeDimSpec
         @test dim(df, [:out => spec]) isa AbstractDataFrame
     end
-    # the no-coltypes fallback list is written against placeholder column names
-    # (`name`/`profit`/`district`/`business`/`score`), so it can only be parsed
+    # the context-free lists are the ONE place placeholders survive -- there is
+    # no frame to name from -- so they can only be parsed, not run
     for s in spec_templates(:dim)
         @test parsedim(s) isa SafeDimSpec
+    end
+    for s in spec_templates(:aggr)
+        @test parseaggr(s) isa SafeAggrSpec
+    end
+
+    # the load-bearing consequence of gap 1 closing: every aggr suggestion for
+    # this frame passes `checkcols` AGAINST this frame. Before, the two-column
+    # shapes only passed because the fixture had been named to match them.
+    for c in cols
+        for s in spec_templates(:aggr; coltypes = df, target = c)
+            @test checkcols(parseaggr(s), cols) isa SafeAggrSpec
+        end
     end
 end

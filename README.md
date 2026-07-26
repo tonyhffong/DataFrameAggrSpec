@@ -17,9 +17,12 @@ DSL defined here safely.
 - [Pipelines](#pipelines)
 - [Untrusted input: the trust boundary](#untrusted-input-the-trust-boundary)
   - [The rule, and the colon flip](#the-rule-and-the-colon-flip)
-  - [The safe grammar](#the-safe-grammar)
-  - [Extending the whitelist](#extending-the-whitelist)
   - [Trusted Expr specs (advanced)](#trusted-expr-specs-advanced)
+- [The safe grammar](#the-safe-grammar)
+  - [What a spec may contain](#what-a-spec-may-contain)
+  - [Errors written for the person typing](#errors-written-for-the-person-typing)
+  - [Suggestion: before and while typing](#suggestion-before-and-while-typing)
+  - [Extending the whitelist](#extending-the-whitelist)
 - [Operator reference](#operator-reference)
 - [Design notes](#design-notes)
 
@@ -374,6 +377,10 @@ one spec form that can arrive from an end user's text field by accident. That
 is the situation this section is about, and it is the reason the package
 exists in this shape.
 
+This section states the rule and covers the *trusted* side. The untrusted side
+is large enough to be its own subsystem and has its own section:
+[The safe grammar](#the-safe-grammar).
+
 ### The rule, and the colon flip
 
 **`Expr` / `Symbol` / `Function` specs are trusted; plain `String`s are
@@ -395,169 +402,6 @@ neighbour ([design/composition-rules.md](design/composition-rules.md), R5).
 exception. In trusted Exprs everything is Julia, so *columns* need the colon
 (`:( sum(:sales) )`); in untrusted strings everything is a column, so *symbol
 literals* need the colon (`"discretize(x, [0], boundedness = :boundedbelow)"`).
-
-### The safe grammar
-
-String specs are parsed by a **whitelist grammar with no eval anywhere** —
-safe to wire to an end user's text field, which is exactly what a TUI/GUI
-host does at runtime via `parseaggr(s)` / `parsedim(s)` (the string macros
-are compile-time sugar for the same thing).
-
-- bare identifier = **column** in every position (`District`, `wt`); `_` = the
-  target column (aggr specs only); `:sym` = a Symbol option value
-  (`boundedness = :boundedbelow`); literals: numbers, strings, `true`/`false`,
-  `[...]` arrays; kwargs in either `f(x, k = v)` or `f(x; k = v)` form.
-- arithmetic (`+ - * / ^`) and comparisons are whitelisted with **broadcast
-  semantics** — vector⊗scalar and vector⊗vector both work, no dots needed.
-- Boolean conditions combine with `&& || !` — pure, elementwise,
-  `missing`-propagating (Kleene; both sides always evaluated). `&&`/`||` bind
-  looser than comparisons, so `sales > 10 && sales < 20` needs no parens.
-  `where(cond)` turns a condition into readable labels whose default IS the
-  condition text: `dim"where(sales > 100)"` labels rows `"sales > 100"` /
-  `"Not sales > 100"` (customize via `true_label` / `false_label`); add
-  `|> groupby(keys...)` to flag groups by their aggregates.
-- whitelisted operations only: reductions (`sum mean median std var quantile
-  minimum maximum count length first last …`), the package verbs (`topnames
-  discretize quantiles where uniqvalue countuniq unionall strjoinuniq lag
-  lead`), the ranking quartet (`rank denserank ordinalrank tiedrank`),
-  date buckets (`yyyy yyyyq yyq yyyymm yymm`), `cumsum`/`cumprod`,
-  and elementwise math (`abs log exp sqrt round ismissing coalesce …`).
-  `listops()` shows the registry; the full reference lives in the two
-  [docs/](docs/) operator documents.
-- top-level `spec ∘ modifier(...)` / `spec |> modifier(...)` attaches engine
-  **modifiers** — `orderby(cols...)` (window ordering) and `groupby(keys...)`
-  (pivot grouping: aggregate the measure at this granularity first) — peeled
-  structurally as metadata, never called (dim specs only; the names are
-  reserved). `groupby` is what makes any verb — including host-registered
-  ones — pivot-kind, with zero per-verb registration. A *nested*
-  `inner |> groupby(keys...)` — legal in both spec kinds — is a different
-  thing: the composite grouped-reduction node (see
-  [Composite aggregation](#composite-aggregation)).
-- everything else is rejected with a clear error: qualified names (`Core.eval`),
-  macros, interpolation, lambdas, indexing, blocks, comprehensions, splats.
-- one wrinkle of "bare identifier = column": `missing`, `pi`, `Inf` are
-  identifiers, hence column references, not constants — so missing-value
-  defaults are literals (`coalesce(x, 0)`, never `coalesce(x, missing)`).
-
-**Errors are written for the person typing the spec** — the standard they are
-held to is that the message says what to type *instead*, and quotes the spec
-it came from (a host parses many per frame, so "unknown function 'foo'" alone
-does not say which one to fix). What that buys, in the order the parser tries:
-
-| You typed | It says |
-|---|---|
-| `maen(_)` | did you mean `mean`? — OSA repair, so transpositions are one edit |
-| `avg(_)`, `nunique(x)`, `ifelse(...)` | not registered here — use `mean(x)` / `countuniq(x)` / `where(cond)`. The spellings people arrive with from SQL, dplyr, pandas and Excel are redirected by name; they are **not** aliases, the spec still fails |
-| `dense_rank(x)`, `SUM(_)` | write it as `denserank` / `sum` — operator names are lowercase, no underscores |
-| `(a > 1) & (b < 2)` | combine conditions with `&&` (and why: it binds looser than the comparisons) |
-| `orderby(date)` | `orderby` is a postfix modifier — `"cumsum(sales) \|> orderby(date)"` |
-| `cumsum(x).orderby(date)` | same reminder — the separator is `\|>` or `∘`, never `.` |
-| `cumsum(:qty)`, `groupby(:region)` | `:qty` is a Symbol literal, only an option *value* here — a column is a bare word, without the colon |
-| `topnames()`, `lag(x, 1, 2, 3)` | takes 3 positional arguments, got 0 — arity is checked against the verb's own method table at **parse** time, not left to become a `MethodError` inside a group-by |
-| `rank(x, rve = true)` | no keyword option `rve` — did you mean `rev`? Accepted: `rev` |
-| `orderby(date, :desc)` | `desc` is a sort direction, not a column — `orderby(date => :desc)` |
-| `x = 1`, `f.(x)`, `df[1, 1]` | assignment / broadcast calls / indexing are not allowed |
-| nothing close enough | the registry itself, as the discovery mechanism of last resort |
-
-Pass the frame's columns to get the same treatment for column references —
-`checkcols(spec, columns)` validates a parsed spec (including `orderby`/
-`groupby` columns, and naming which of the two a bad reference sits in), and
-the entry points take it as a kwarg:
-
-```julia
-parseaggr(usertext; columns = propertynames(df))   # sum(qtty) — did you mean 'qty'?
-```
-
-`agg` and `dim` make the equivalent checks at apply time (chain keys, measure
-sources, dimension inputs), so misspelled columns fail with a suggestion
-instead of a bare DataFrames indexing error.
-
-Every one of these rejections is a `SpecError`, which carries the same
-information as **data** beside the prose — for a linter, an editor, or an agent
-repairing its own output:
-
-```julia
-e = try parseaggr("sum(qtty)"; columns = propertynames(df)) catch e; e end
-e.code            # :unknown_column
-e.token           # :qtty
-e.fix             # :qty        — a drop-in replacement, or `nothing`
-e.spec[e.span]    # "qtty"      — byte range of the offending text
-```
-
-`sprint(showerror, e)` prints exactly the message shown above, so text-only
-consumers need not care. `fix` is set only when substituting it at `span`
-yields a valid spec, so a quick-fix can be applied without re-checking;
-redirects whose answer is a restructure (the SQL/pandas spellings, the modifier
-reminders) leave it `nothing` and put the advice in the message. Programmer
-errors — a bad `kind` argument, a malformed `AggrHints` key — stay ordinary
-`ErrorException`s, so catching `SpecError` means "something to report against a
-user's spec".
-
-The rejections above are only half of it. `spec_templates(kind; coltypes,
-target, targetdata)` proposes whole starter specs *before* the user types,
-narrowed by the target column's type, the frame's other columns, and the values
-actually in front of them; `spec_vocabulary` is the identifier-completion list;
-`specsummary`/`specfields` render a parsed spec back as text a host can echo.
-Both halves read the same registry, so a `registerop!` shows up in suggestion,
-completion and repair at once.
-
-[design/user-guidance.md](design/user-guidance.md) covers the whole system as
-one thing — the four moments (templates before typing → completion while typing
-→ rejection or echo-back on submit → `checkcols` at apply time), why the
-rejection ladder tries its rungs in that order, and the eight rules the two
-halves must jointly satisfy. **Read it before adding an error message or a
-template.**
-
-### Extending the whitelist
-
-Hosts extend the whitelist deliberately, in code — never via spec strings:
-
-```julia
-registerop!(:double, x -> 2 .* x)              # dim"double(sales)"
-using StatsBase; registerop!(:Weights, Weights)
-aggr"mean(_, Weights(EnrlTot))"                # mean is already registered;
-                                               # dispatch does the rest
-
-# custom classifier verbs (they label groups, like topnames) declare which
-# argument carries their grouping key(s):
-registerop!(:tophalf, (name, measure) -> ...)
-registerclassifier!(:tophalf, 1)               # dim"tophalf(District, TestScr)"
-```
-
-#### Declaring an operator's shape
-
-`shape` tells the parser how many values an operator returns *relative to its
-input rows*, which is what lets whole classes of mistake be caught before the
-engine runs:
-
-| `shape` | Meaning | Shipped examples |
-|---|---|---|
-| `:reduce` | whole vector → **one** value | `sum`, `mean`, `uniqvalue`, `unionall` |
-| `:map` | one value **per row** | `cumsum`, `rank`, `lag`, `discretize` |
-| `:elementwise` | follows its arguments | `+`, `==`, `abs`, `coalesce`, `where` |
-| `:filter` | many values, **not** row-aligned | `skipmissing` |
-
-```julia
-registerop!(:movmean, movmean; shape = :map)
-```
-
-Shape composes, so it is inferred for a whole spec rather than read off the top
-name: `sum(_ * wt) / sum(wt)` reduces (both operands do) while `sales /
-sum(sales)` does not, though both are a division. Two checks follow — an
-aggregation spec must reduce to one value, and a `|> groupby(...)` dimension
-must produce one label *per group* rather than collapse them:
-
-```julia
-aggr"cumsum(_)"                  # ✗ computes one value per ROW
-dim"mean(sales) |> groupby(region)"
-# ✗ a groupby dimension LABELS each group, so it must give one value per
-#   group, but 'mean' reduces them to a single value. Classify the groups
-#   instead — rank/denserank, quantiles, discretize, topnames, …
-```
-
-Declaring a shape is **optional**: an operator that omits it is `:unknown`, and
-the checks stay silent for any spec mentioning it rather than guess — the same
-bail-out `check_arity`/`check_kwargs` make. `opshape(name)` reports it.
 
 ### Trusted Expr specs (advanced)
 
@@ -591,6 +435,175 @@ dim(df, [:County, :top1 => dim"topnames(District, TestScr, 1)"],   # user-typed 
         [:County, :top1, :share => :( :TestScr ./ sum(:TestScr) )], # trusted measure
         [:County, :top1, :cum => dim"cumsum(EnrlTot) |> orderby(TestScr)"])
 ```
+
+## The safe grammar
+
+The untrusted half is a subsystem in its own right: a **whitelist grammar with
+no eval anywhere**, safe to wire directly to an end user's text field, which is
+what a TUI/GUI host does at runtime via `parseaggr(s)` / `parsedim(s)` (the
+string macros are compile-time sugar for the same thing).
+
+What it gives a host, beyond parsing:
+
+- **Default-deny, eval-free.** Only whitelisted operations exist; the result is
+  an ordinary closure at the current world age, cheap enough to re-parse on a
+  keystroke.
+- **Mistakes caught at parse time, not inside a group-by** — wrong arity, an
+  unknown keyword, and a spec whose *shape* cannot be what it is being used as.
+- **Errors written for the person typing**, held to "the message says what to
+  type instead", and carried as structured data (`SpecError`) for linters,
+  editors and agents.
+- **Proactive suggestion** — starter templates narrowed to the frame,
+  identifier completion, and an echo-back of what a valid spec means.
+- **Host-extensible** with `registerop!`, which every one of the above reads,
+  so a new operator appears in completion, repair and suggestion at once.
+
+The whole guidance system — and the rules it must satisfy — is documented in
+**[design/user-guidance.md](design/user-guidance.md)**; the per-operator
+reference is in the two [docs/](docs/) operator documents. What follows is the
+overview.
+
+### What a spec may contain
+
+- bare identifier = **column** in every position (`District`, `wt`); `_` = the
+  target column (aggr specs only); `:sym` = a Symbol option value
+  (`boundedness = :boundedbelow`); literals: numbers, strings, `true`/`false`,
+  `[...]` arrays; kwargs in either `f(x, k = v)` or `f(x; k = v)` form.
+- arithmetic and comparisons are whitelisted with **broadcast semantics** —
+  vector⊗scalar and vector⊗vector both work, no dots needed. Conditions combine
+  with `&& || !`: pure, elementwise, `missing`-propagating (Kleene), and binding
+  looser than comparisons, so `sales > 10 && sales < 20` needs no parens.
+- whitelisted operations only — reductions, the package verbs, the ranking
+  quartet, date buckets, elementwise math. `listops()` shows the live registry;
+  [docs/safe-aggregation-operators.md](docs/safe-aggregation-operators.md) and
+  [docs/safe-dimension-operators.md](docs/safe-dimension-operators.md) document
+  every one.
+- top-level `spec ∘ modifier(...)` / `spec |> modifier(...)` attaches engine
+  **modifiers** — `orderby(cols...)` and `groupby(keys...)` — peeled
+  structurally as metadata, never called. `groupby` is what makes any verb,
+  including host-registered ones, pivot-kind with zero per-verb registration. A
+  *nested* `inner |> groupby(keys...)` is a different thing: the composite
+  grouped-reduction node (see [Composite aggregation](#composite-aggregation)).
+- everything else is rejected with a clear error: qualified names
+  (`Core.eval`), macros, interpolation, lambdas, indexing, blocks,
+  comprehensions, splats.
+- one wrinkle of "bare identifier = column": `missing`, `pi`, `Inf` are
+  identifiers, hence column references, not constants — so missing-value
+  defaults are literals (`coalesce(x, 0)`, never `coalesce(x, missing)`).
+
+### Errors written for the person typing
+
+Every rejection is held to the same standard — say what to type *instead* — and
+quotes the spec it came from, since a host parses many per frame. A sample of
+what that buys:
+
+| You typed | It says |
+|---|---|
+| `maen(_)` | did you mean `mean`? — OSA repair, so transpositions are one edit |
+| `avg(_)`, `nunique(x)`, `nullif(a, b)` | not registered here — use `mean(x)` / `countuniq(x)` / `onlyif(a != b, a)`. The spellings people arrive with from SQL, dplyr, pandas and Excel are redirected by name; they are **not** aliases, the spec still fails |
+| `(a > 1) & (b < 2)` | combine conditions with `&&` (and why: it binds looser than the comparisons) |
+| `cumsum(:qty)` | `:qty` is a Symbol literal, only an option *value* here — a column is a bare word, without the colon |
+| `topnames()` | takes 3 positional arguments, got 0 — arity is checked against the verb's own method table at **parse** time, rather than becoming a `MethodError` inside a group-by |
+| `orderby(date, :desc)` | `desc` is a sort direction, not a column — `orderby(date => :desc)` |
+| nothing close enough | the registry itself, as the discovery mechanism of last resort |
+
+The parser tries these in a deliberate order, most-specific first; the full
+ladder and the reasoning behind its ordering are in
+[design/user-guidance.md](design/user-guidance.md).
+
+Pass the frame's columns to get the same treatment for column references:
+
+```julia
+parseaggr(usertext; columns = propertynames(df))   # sum(qtty) — did you mean 'qty'?
+```
+
+`checkcols(spec, columns)` is the standalone form, and `agg`/`dim` make the
+equivalent checks at apply time, so misspelled columns fail with a suggestion
+instead of a bare DataFrames indexing error.
+
+Every rejection is a `SpecError`, carrying the same information as **data**
+beside the prose — for a linter, an editor, or an agent repairing its own
+output:
+
+```julia
+e = try parseaggr("sum(qtty)"; columns = propertynames(df)) catch e; e end
+e.code            # :unknown_column
+e.token           # :qtty
+e.fix             # :qty        — a drop-in replacement, or `nothing`
+e.spec[e.span]    # "qtty"      — byte range of the offending text
+```
+
+`sprint(showerror, e)` prints exactly the message a human sees, so text-only
+consumers need not care. `fix` is set only when substituting it at `span`
+yields a valid spec, so a quick-fix can be applied without re-checking.
+Programmer errors — a bad `kind` argument, a malformed `AggrHints` key — stay
+ordinary `ErrorException`s, so catching `SpecError` means "something to report
+against a user's spec".
+
+### Suggestion: before and while typing
+
+The rejections above are the reactive half. The proactive half proposes specs
+*before* a key is pressed:
+
+```julia
+spec_templates(:aggr; coltypes = df, target = :sales, targetdata = df.sales)
+# starter specs narrowed by the target's type, the frame's other columns
+# (which they NAME, so each one runs as offered), and the values in front of
+# the user: e.g. "sum(_ * weight) / sum(weight)", "last(_) |> orderby(trade_dt)"
+
+spec_vocabulary(:aggr; columns = propertynames(df))   # identifier completion
+specsummary(aggr"sum(_ * wt) / sum(wt)")              # echo back what it means
+```
+
+Both halves read the same registry, so a `registerop!` shows up in suggestion,
+completion and repair at once.
+
+### Extending the whitelist
+
+Hosts extend the whitelist deliberately, in code — never via spec strings:
+
+```julia
+registerop!(:double, x -> 2 .* x)              # dim"double(sales)"
+using StatsBase; registerop!(:Weights, Weights)
+aggr"mean(_, Weights(EnrlTot))"                # mean is already registered;
+                                               # dispatch does the rest
+
+# custom classifier verbs (they label groups, like topnames) declare which
+# argument carries their grouping key(s):
+registerop!(:tophalf, (name, measure) -> ...)
+registerclassifier!(:tophalf, 1)               # dim"tophalf(District, TestScr)"
+```
+
+#### Declaring an operator's shape
+
+`shape` tells the parser how many values an operator returns *relative to its
+input rows*:
+
+| `shape` | Meaning | Shipped examples |
+|---|---|---|
+| `:reduce` | whole vector → **one** value | `sum`, `mean`, `uniqvalue`, `unionall` |
+| `:map` | one value **per row** | `cumsum`, `rank`, `lag`, `discretize` |
+| `:elementwise` | follows its arguments | `+`, `==`, `abs`, `coalesce`, `where` |
+| `:filter` | many values, **not** row-aligned | `skipmissing` |
+
+```julia
+registerop!(:movmean, movmean; shape = :map)
+```
+
+Shape is *inferred for the whole spec*, not read off the top name —
+`sum(_ * wt) / sum(wt)` reduces while `sales / sum(sales)` does not, though
+both are a division. That catches two mistakes the engine would otherwise hit
+much later:
+
+```julia
+aggr"cumsum(_)"                      # ✗ computes one value per ROW
+dim"mean(sales) |> groupby(region)"  # ✗ a groupby dimension LABELS each group,
+                                     #   but 'mean' reduces them to one value
+```
+
+Declaring a shape is **optional**: an operator that omits it is `:unknown` and
+the checks stay silent for any spec mentioning it rather than guess — the same
+bail-out `check_arity`/`check_kwargs` make. `opshape(name)` reports it.
 
 ## Operator reference
 

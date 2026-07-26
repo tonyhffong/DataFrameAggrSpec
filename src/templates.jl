@@ -14,22 +14,25 @@
 # truncation to a one-row hint, a dropdown) is the host's business. TermWin's
 # newTwSpecEntry is the reference consumer, but nothing here knows about it.
 #
-# AGGR templates are written against `_` -- the aggregation target -- and never
-# enumerate the frame's columns. An aggregation reduces exactly ONE column and
-# the host always knows which one (a table's cursor sits on it), so a per-column
-# catalogue would be N copies of one list where only the target's *type* differs.
-# Context therefore FILTERS rather than names:
+# AGGR templates write the TARGET as `_` and never name it: one spec is reused
+# across target columns, and the host always knows which column the cursor sits
+# on, so a per-column catalogue would be N copies of one list where only the
+# target's *type* differs. SIBLING columns are named for real, though (G8 in
+# design/user-guidance.md) -- a two-column shape written against a placeholder
+# fails `checkcols` on any frame that lacks a column of that literal name,
+# which made those suggestions dead on arrival. Context therefore filters AND
+# names:
 #
 #   * the TARGET's type family picks the reducer set -- numeric -> sum/mean/std…,
 #     text -> uniqvalue/strjoinuniq…, `Bool` -> the group flags rather than the
 #     `Bool <: Number` reducers, date -> minimum/maximum/first/last.
-#   * the frame's OTHER columns gate the shapes that need a second column: a
-#     weighted mean needs something to weight by, `|> orderby(…)` an ordering
-#     key. The second column keeps a GENERIC placeholder (`wt`, `date`, `year`)
-#     for the user to edit -- the frame decides only whether the shape is worth
-#     offering. Until the placeholder is replaced the spec fails `checkcols`
-#     with a did-you-mean pointing at the real column, which is the fastest path
-#     to the right name anyway.
+#   * the frame's OTHER columns supply the shapes that need a second column: a
+#     weighted mean needs something to weight by, `|> orderby(…)` a date, the
+#     measure guard something categorical. Each is offered ONLY when such a
+#     column exists, and names it -- gate and name are one decision, so a
+#     template can never mention a column family the frame lacks. Placeholders
+#     survive in exactly one place: the context-free catalogue, where there is
+#     no frame to name from.
 #   * the DATA the host is looking at (the target column's values in the group
 #     under the cursor) promotes the specs that answer what the values actually
 #     look like: missings present -> the `skipmissing`/`coalesce` variants lead;
@@ -85,14 +88,28 @@ const _AGGR_BY_FAMILY = Dict{Symbol,Vector{String}}(
 # family's reducers with all the gates below opened.
 const _AGGR_FAMILY_ORDER = (:numeric, :bool, :text, :date, :other)
 
-# Shapes that reference a SECOND column, gated on the frame having one to offer.
-# The name shown stays a placeholder the user edits.
-const _AGGR_WEIGHTED  = ["sum(_ * wt) / sum(wt)",            # weighted mean
-                         "wmeanfallback(_, [wt1, wt2, 1])"]  # cascading weights (1 = unweighted fallback)
-const _AGGR_ORDERED   = ["last(_) |> orderby(date)",         # latest value (the arg-max spelling)
-                         "first(_) |> orderby(date)"]        # earliest -- `orderby` sorts the group first
-const _AGGR_COMPOSITE = ["mean(sum(_) |> groupby(year))",    # per-year totals, then averaged
-                         "last(sum(_) |> groupby(year))"]    # the latest year's total
+# Shapes that reference a SECOND column. When the caller supplies `coltypes`
+# these name a REAL column of the frame (see _aggr_sidecols); the placeholder
+# spellings below are the fallback for the context-free catalogue, where there
+# is no frame to name from.
+const _AGGR_WEIGHTED_P  = ["sum(_ * wt) / sum(wt)",            # weighted mean
+                           "wmeanfallback(_, [wt1, wt2, 1])"]  # cascading weights (1 = unweighted fallback)
+const _AGGR_ORDERED_P   = ["last(_) |> orderby(date)",         # latest value (the arg-max spelling)
+                           "first(_) |> orderby(date)"]        # earliest -- `orderby` sorts the group first
+const _AGGR_COMPOSITE_P = ["mean(sum(_) |> groupby(year))",    # per-year totals, then averaged
+                           "last(sum(_) |> groupby(year))"]    # the latest year's total
+const _AGGR_GUARDED_P   = ["onlyif(isuniform(unit), sum(_))"]  # missing unless units agree
+
+# ...and the same four shapes written against columns the frame actually has.
+_aggr_weighted(ws) =
+    length(ws) >= 2 ?
+        ["sum(_ * $(ws[1])) / sum($(ws[1]))",
+         "wmeanfallback(_, [$(ws[1]), $(ws[2]), 1])"] :
+        ["sum(_ * $(ws[1])) / sum($(ws[1]))",
+         "wmeanfallback(_, [$(ws[1]), 1])"]
+_aggr_ordered(d)    = ["last(_) |> orderby($d)", "first(_) |> orderby($d)"]
+_aggr_composite(k)  = ["mean(sum(_) |> groupby($k))", "last(sum(_) |> groupby($k))"]
+_aggr_guarded(u)    = ["onlyif(isuniform($u), sum(_))"]
 
 # Read the group as a whole rather than the target's values, so always offerable.
 const _AGGR_TAIL = ["uniqvalue(_)", "countuniq", "nrow"]
@@ -127,28 +144,41 @@ function _aggr_missing_variants(fam)
     out
 end
 
-# What the frame's OTHER columns make offerable. Every flag is about a SHAPE, not
-# a name -- the template keeps its generic placeholder either way. No column
-# information at all means "don't filter".
+# Which of the frame's OTHER columns each two-column shape should name.
+# `nothing` (or an empty vector) means the frame cannot support that shape, so
+# it is not offered at all -- the gate and the name are now the same decision,
+# which is what stops a template naming a column family the frame lacks.
 #
-# `order` is gated on a DATE sibling specifically, not on any orderable one.
-# The gate and the placeholder have to agree: `_AGGR_ORDERED` names `date`, so
-# opening the gate for a numeric-only frame would suggest a column family the
-# user demonstrably does not have -- a placeholder is only honest (G8,
-# design/user-guidance.md) while it reads as "edit me", and `orderby(date)` on a
-# frame with no date reads as a claim about the frame. Ordering by a numeric
-# sequence column stays typeable; it is just not offered unprompted.
-function _aggr_context(coltypes, target)
-    coltypes === nothing && return (weight = true, order = true, group = true)
-    weight = order = group = false
+# The choices are POSITIONAL (first sibling of the right family), matching what
+# `_dim_templates_for` has always done for its measure and order columns. A
+# smarter guess -- name-sniffing for "unit"/"currency", skipping id-like
+# columns -- was considered and declined: it is locale-bound, fragile, and the
+# user edits the name anyway. What matters is that the spec RUNS on their frame
+# (see G8 in design/user-guidance.md), not that the column is the one they
+# would eventually have picked.
+function _aggr_sidecols(coltypes, target)
+    coltypes === nothing &&
+        return (weights = Symbol[], order = nothing, groupkey = nothing, guard = nothing)
+    nums = Symbol[]; dates = Symbol[]; cats = Symbol[]
     for (c, T) in coltypes
         c === target && continue
-        group = true                  # any other column can serve as a group key
         fam = _type_family(T)
-        fam === :numeric && (weight = true)
-        fam === :date    && (order  = true)
+        fam === :numeric              && push!(nums, c)
+        fam === :date                 && push!(dates, c)
+        (fam === :text || fam === :other) && push!(cats, c)
     end
-    (weight = weight, order = order, group = group)
+    d = isempty(dates) ? nothing : first(dates)
+    # a composite key wants a COARSER grain than the raw column: a date becomes
+    # a year bucket (which also demonstrates that groupby keys may be computed),
+    # anything else is used as-is
+    gk = d !== nothing ? "yyyy($d)" :
+         !isempty(cats) ? string(first(cats)) : nothing
+    # the guard column is categorical-ish: units, currencies and scales live
+    # there, and `isuniform(some_numeric_measure)` would be noise
+    (weights  = nums,
+     order    = d,
+     groupkey = gk,
+     guard    = isempty(cats) ? nothing : first(cats))
 end
 
 # How many values we look at, and how many distinct ones we track, before giving
@@ -195,8 +225,10 @@ end
 # catalogue (`_AGGR_TEMPLATES`).
 function _aggr_templates_for(coltypes, target, targettype, data)
     fam   = targettype === nothing ? nothing : _type_family(targettype)
-    ctx   = _aggr_context(coltypes, target)
+    side  = _aggr_sidecols(coltypes, target)
     facts = _aggr_datafacts(data)
+    known = coltypes !== nothing        # can we name real columns, or must we
+                                        # fall back to the placeholder spellings?
 
     # The type says `missing` is possible; the data says it is actually there.
     # Only the latter earns a spot at the TOP of the list.
@@ -222,9 +254,21 @@ function _aggr_templates_for(coltypes, target, targettype, data)
     end
     observed || append!(body, mvars)
     numericish = fam === nothing || fam === :numeric || fam === :bool
-    numericish && ctx.weight && append!(body, _AGGR_WEIGHTED)
-    ctx.order              && append!(body, _AGGR_ORDERED)
-    numericish && ctx.group && append!(body, _AGGR_COMPOSITE)
+    # With a frame in hand, a shape is offered only when there is a real column
+    # to write it against, and it names that column. Without one (the
+    # context-free catalogue) every shape is offered in its placeholder form,
+    # since there is nothing to check against and nothing to name.
+    if known
+        numericish && !isempty(side.weights) && append!(body, _aggr_weighted(side.weights))
+        side.order    !== nothing && append!(body, _aggr_ordered(side.order))
+        numericish && side.groupkey !== nothing && append!(body, _aggr_composite(side.groupkey))
+        numericish && side.guard    !== nothing && append!(body, _aggr_guarded(side.guard))
+    else
+        numericish && append!(body, _AGGR_WEIGHTED_P)
+        append!(body, _AGGR_ORDERED_P)
+        numericish && append!(body, _AGGR_COMPOSITE_P)
+        numericish && append!(body, _AGGR_GUARDED_P)
+    end
     append!(body, _AGGR_TAIL)
 
     out = append!(lead, body)
@@ -309,6 +353,9 @@ function _dim_templates_for(coltypes)
     end
     for c in bools
         push!(out, "where($c)")
+        # the row-level guard: blank out the measure where the flag is false,
+        # rather than labelling the row (which is what `where` does)
+        measure !== nothing && push!(out, "onlyif($c, $measure)")
         # ...and the pivot reading: under `groupby` the Bool column arrives
         # ALREADY aggregated (a count per group, via AggrHints), so the
         # per-group "any true" test is `> 0`, not `any(...)` -- `any` would be
@@ -342,12 +389,15 @@ the target column. Context narrows the list rather than expanding it:
   `uniqvalue`/`strjoinuniq`/…, `Bool` → the group flags `any`/`all`/`count`,
   date → `minimum`/`maximum`/`first`/`last`). `targettype` defaults to `target`'s
   entry in `coltypes`, then to `eltype(targetdata)`.
-* `coltypes` — the rest of the frame, which gates the shapes needing a *second*
-  column: `sum(_ * wt) / sum(wt)` only when some other column is numeric,
-  `last(_) |> orderby(date)` only when there is an ordering key. Those keep the
-  generic `wt`/`date`/`year` placeholder names for the user to edit — they will
-  not pass [`checkcols`](@ref) until replaced, which is deliberate: the
-  did-you-mean repair then names the real column.
+* `coltypes` — the rest of the frame, which supplies the shapes needing a
+  *second* column and **names it**: `sum(_ * weight) / sum(weight)` when some
+  other column is numeric, `last(_) |> orderby(trade_dt)` when there is a date
+  to order by, `onlyif(isuniform(currency), sum(_))` when there is a
+  categorical column to guard by. Each shape is offered only when the frame has
+  a column of the right family, so gate and name are one decision and every
+  suggestion passes [`checkcols`](@ref) against the frame it came from. The
+  choice is positional (first sibling of the right family); the user retargets
+  it if a different column was meant.
 * `targetdata` — the target column's values in the group the user is looking at.
   Their shape promotes entries to the front: missings present → the
   `skipmissing`/`coalesce` variants, a constant or low-cardinality column →
