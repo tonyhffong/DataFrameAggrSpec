@@ -7,10 +7,10 @@ A dimension spec creates a **new column** whose values are computed from
 modified.
 
 > **Maintenance rule:** this document must list every dimension-relevant
-> operator in the `SafeOps` registry (`src/safe.jl`). Whenever an operator is
+> operator in the `SafeOps` registry (`src/registry.jl`). Whenever an operator is
 > added to or removed from the shipped registry, update this file (or
 > `safe-aggregation-operators.md`). The testset *"operator docs stay in sync"*
-> in `test/safe.jl` fails otherwise.
+> in `test/safe-grammar.jl` fails otherwise.
 
 ## Grammar recap
 

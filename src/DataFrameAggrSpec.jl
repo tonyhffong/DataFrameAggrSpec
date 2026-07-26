@@ -97,6 +97,10 @@ export dimspec, dim, dim!
 # Aggregation / presentation verbs
 export uniqvalue, countuniq, unionall, strjoinuniq, discretize, topnames, quantiles, lag, lead, where
 export wmeanfallback
+# Guarded values: `onlyif` injects a missing under a condition (the fourth
+# missing-value role beside drop/replace/flag), `isuniform` is the strict
+# "this column is constant across the group" predicate it is usually given.
+export onlyif, isuniform
 # The ranking quartet (rank/denserank/ordinalrank/tiedrank) is deliberately NOT
 # exported, the one exception to the "every verb is exported" rule: `rank`
 # collides with LinearAlgebra.rank (matrix rank) and the other three with their

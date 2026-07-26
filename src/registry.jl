@@ -103,7 +103,8 @@ bcast(f) = (args...; kwargs...) -> Base.broadcast((a...) -> f(a...; kwargs...), 
 # containers and still belong here: one answer per group is the criterion.
 for f in (sum, prod, mean, median, std, var, quantile, minimum, maximum, extrema,
           length, count, first, last, any, all,
-          uniqvalue, countuniq, unionall, strjoinuniq, wmeanfallback)
+          uniqvalue, countuniq, unionall, strjoinuniq, wmeanfallback,
+          isuniform)
     _register!(Symbol(f), f, :reduce)
 end
 
@@ -126,6 +127,13 @@ _register!(:skipmissing, skipmissing, :filter)
 # distinguished, and what lets the pivot check catch a scalar condition under
 # `groupby`.
 _register!(:where, where, :elementwise)
+
+# `onlyif` is :elementwise for the same reason: it guards a scalar aggregate
+# (aggr"onlyif(isuniform(unit), sum(_))") or a whole column
+# (dim"onlyif(quality_ok, sales)") depending on what it is handed, and the
+# shape checks then reject the confused forms for free -- `onlyif(unit, sum(_))`
+# infers row-wise and is refused as an aggregation.
+_register!(:onlyif, bcast(onlyif), :elementwise)
 
 # nrow: DataFrames.jl-flavored alias for length -- group row count without
 # reaching for `count`, whose Base semantics (number of trues) are unrelated

@@ -73,8 +73,19 @@ const ForeignSpellings = Dict{Symbol,String}(
     :listagg        => "strjoinuniq(x)",
     :concat         => "strjoinuniq(x)",
     :strjoin        => "strjoinuniq(x)",
-    :ifelse         => "where(cond), which labels both sides -- or plain " *
-                       "arithmetic, e.g. x * (x > 0)",
+    :ifelse         => "where(cond), which labels both sides -- or " *
+                       "onlyif(cond, x) when the other branch is missing, or " *
+                       "plain arithmetic, e.g. x * (x > 0)",
+    # SQL's NULLIF(a, b) is null WHEN a = b -- the opposite reading of the
+    # name, so this redirect has to invert the condition rather than just
+    # rename the verb.
+    :nullif         => "onlyif(a != b, a) -- note SQL's NULLIF(a, b) nulls " *
+                       "when a EQUALS b, so the condition inverts",
+    :stopifnull     => "onlyif(cond, x), e.g. " *
+                       "onlyif(isuniform(unit), sum(_))",
+    :allequal       => "isuniform(x) for the strict reading (a missing makes " *
+                       "it false), or countuniq(x, skipna = false) == 1 for " *
+                       "Julia's allequal semantics exactly",
     :ifthen         => "where(cond)",
     :iif            => "where(cond)",
     :casewhen       => "where(cond) for a two-way split, or " *

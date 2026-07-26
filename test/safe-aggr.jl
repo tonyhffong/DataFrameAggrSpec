@@ -240,3 +240,78 @@ end
     out = agg(df, :g; hints = AggrHints(:name => aggr"strjoinuniq(_)"))
     @test out.name == ["a,b", "c"]
 end
+
+@testset "isuniform" begin
+    # STRICT: equal values AND no missing. A row whose unit is *unknown* is a
+    # row whose unit is *possibly different*, which is the whole point.
+    @test isuniform(["USD", "USD"])
+    @test !isuniform(["USD", "EUR"])
+    @test !isuniform(["USD", missing])       # the trap the strict reading closes
+    @test !isuniform([missing, missing])     # nothing known ⇒ nothing established
+    @test !isuniform(String[])               # nothing to agree on
+    @test isuniform([1])
+    @test isuniform([1.0, 1.0])              # isequal, so any element type
+    @test !isuniform([1, 2])
+
+    # the two looser readings stay spellable with existing operators, which is
+    # why only the strict one is registered
+    u = ["USD", missing]
+    @test countuniq(u) == 1                      # lenient: ignores the unknown
+    @test countuniq(u; skipna = false) == 2      # ≡ Julia's allequal
+    @test allequal(u) == (countuniq(u; skipna = false) == 1)
+    @test !isuniform(u)
+
+    @test aggr"isuniform(unit)".f(["USD", "USD"]) === true
+    @test aggr"isuniform(unit)".f(["USD", "EUR"]) === false
+end
+
+@testset "onlyif" begin
+    # x when the condition holds, missing otherwise -- the *inject* member of
+    # the missing-value set
+    @test onlyif(true, 5) == 5
+    @test onlyif(false, 5) === missing
+    @test onlyif(missing, 5) === missing          # Kleene, like && / ||
+    @test_throws ErrorException onlyif(1, 5)      # non-Boolean, as in `where`
+
+    # elementwise, so it follows its arguments: scalar guards an aggregate,
+    # vector guards a column
+    guard = aggr"onlyif(countuniq(unit) == 1, sum(_))"
+    @test guard.cols == [:unit, :_]        # .f takes columns in first-encounter order
+    @test guard.f(["a", "a"], [1, 2]) == 3
+    @test guard.f(["a", "b"], [1, 2]) === missing
+    @test isequal(dim"onlyif(ok, v)".f([true, false, true], [1, 2, 3]),
+                  [1, missing, 3])
+
+    # the motivating case, end to end: a total that must not be reported when
+    # the group mixes units. Group X mixes a known unit with an UNKNOWN one --
+    # lenient guards let it through, which is why isuniform is strict.
+    df = DataFrame(region = ["E", "E", "W", "W", "X", "X"],
+                   unit   = ["USD", "USD", "USD", "EUR", "USD", missing],
+                   sales  = [10, 20, 30, 40, 50, 60])
+    strict = agg(df, :region; cols = [:sales => aggr"onlyif(isuniform(unit), sum(_))"])
+    @test isequal(strict.sales, [30, missing, missing])
+    lenient = agg(df, :region; cols = [:sales => aggr"onlyif(countuniq(unit) == 1, sum(_))"])
+    @test isequal(lenient.sales, [30, missing, 110])   # X slips through
+    # the column widens to admit the guarded value rather than coercing it
+    @test eltype(strict.sales) == Union{Missing,Int}
+
+    # the arithmetic workarounds this exists to replace are actively wrong:
+    # `* (cond)` yields 0, indistinguishable from a real zero total
+    @test agg(df, :region; cols = [:sales => aggr"sum(_) * (countuniq(unit) == 1)"]).sales ==
+          [30, 0, 110]
+
+    # shape inference catches the confused forms for free
+    @test_throws SpecError parseaggr("onlyif(unit, sum(_))")   # condition is a column
+    @test_throws SpecError parseaggr("onlyif(isuniform(unit), sales)")
+
+    # foreign spellings redirect, including SQL's inverted NULLIF
+    redirect(s, needle) = begin
+        e = try (parseaggr(s); nothing) catch e; e end
+        e !== nothing && occursin(needle, sprint(showerror, e))
+    end
+    @test redirect("nullif(a, b)", "onlyif(a != b, a)")
+    @test redirect("nullif(a, b)", "nulls when a EQUALS b")
+    @test redirect("stopifnull(x, unit)", "onlyif(cond, x)")
+    @test redirect("allequal(unit)", "isuniform(x)")
+    @test redirect("ifelse(c, x, y)", "onlyif(cond, x)")
+end

@@ -130,11 +130,22 @@ error message does that job instead.
 `registerop!` refuses names containing `!`, but that ban is a rule for *host*
 names, not a statement about the shipped registry.
 
-**`ifelse` is declined.** Given `where`, the flag/labeling use case — which
-is what people actually reach for `ifelse` to do — is covered. The residual
-numeric uses have existing spellings (`max(x, 0)`, `x * (x > 0)`), and
-anything beyond that is host `registerop!` territory. Do not re-propose
-without a use case that none of those three cover.
+**`ifelse` is declined — but the escape clause fired once.** Given `where`,
+the flag/labeling use case — which is what people actually reach for `ifelse`
+to do — is covered. The residual numeric uses have existing spellings
+(`max(x, 0)`, `x * (x > 0)`), and anything beyond that is host `registerop!`
+territory. The condition for re-proposing was "a use case that none of those
+three cover", and in 2026-07 one arrived: guarding a measure so it reports
+`missing` rather than a number — *don't total across mixed units*. `where`
+gives a String label, not a missing measure; `x * (cond)` yields **`0`**,
+indistinguishable from a real zero total; and unit-consistency is generic data
+quality, not host-specific. The answer was `onlyif(cond, x)` (below), which is
+only the missing-injecting shape — **not** a general `ifelse`, so this decline
+still stands for everything else. The ternary `cond ? x : missing` was
+considered as an alternative and declined separately: it needs two grammar
+changes (`:if` is in `SafeRejections`, and bare `missing` is a *column*), and
+is not even shorter than `onlyif(cond, x)`. Vocabulary is reversible through
+`ForeignSpellings`; grammar admitted to a default-deny parser is not.
 
 **A subset-mask verb (SQL `FILTER`, dplyr's `x[cond]`) is declined.** The
 rationale here is dimension-first: make the condition a chain key and reduce —
@@ -152,16 +163,36 @@ Only the compiler ever sees that text, so the default is injected at parse
 time (`desugar_where!`); trusted-`Expr` callers must pass `true_label`
 explicitly, because there is no source string to recover.
 
-## Missing values: drop, replace, flag
+## Missing values: drop, replace, flag, inject
 
-The row-level trio is complete, and the three roles are the useful framing
-for documentation:
+The set is complete, and the four roles are the useful framing for
+documentation:
 
 | role | operator |
 |---|---|
 | drop | `skipmissing` |
 | replace | `coalesce` |
 | flag | `ismissing` |
+| inject | `onlyif` |
+
+`onlyif(cond, x)` — `x` when `cond` holds, `missing` otherwise — was the last
+to arrive (2026-07) and is the only one that *produces* a missing rather than
+consuming one. It exists because a measure sometimes must not be **reported**:
+a total across mixed currencies is not a number, and the alternative spellings
+silently return `0`. It is Julia's `ifelse(cond, x, missing)` under a name that
+survives the trust boundary, which keeps the `ifelse` decline above intact.
+
+Its usual condition is `isuniform(x)` — strictly "one distinct value and no
+missing". **`Base.allequal` was the obvious candidate and was declined twice
+over**, which is worth recording because the name is tempting: it is already
+expressible (`countuniq(x, skipna = false) == 1` matches it exactly, so
+registering it would be the vocabulary debt rule 3 forbids), *and* its
+semantics are not the ones wanted — `allequal([missing, missing])` is `true`,
+so a group whose units are entirely unknown would pass the guard. Taking the
+Base name while changing the semantics would have been worse than either,
+breaking the portability the governing law exists to protect: `aggr"allequal(u)"`
+and a trusted `Expr` calling `Base.allequal` must not disagree. A new meaning
+gets a new name; `ForeignSpellings` carries `allequal` to both spellings.
 
 `coalesce` is n-ary — a fallback cascade
 (`coalesce(phone_mobile, phone_home, 0)`) — which is the general operation
@@ -205,7 +236,9 @@ A quick index, so these are not rediscovered one at a time:
 
 | Not registered | Instead | Why |
 |---|---|---|
-| `ifelse` | `where`, `max(x, 0)`, `x * (x > 0)` | labeling case covered; residual has spellings |
+| `ifelse` | `where`, `onlyif`, `max(x, 0)`, `x * (x > 0)` | labeling → `where`, missing-injection → `onlyif`; the rest has spellings |
+| `allequal` | `isuniform`, `countuniq(x, skipna = false) == 1` | already expressible, and Base's semantics are the lenient ones |
+| `cond ? x : y` (ternary) | `onlyif`, `where` | needs `:if` in the grammar AND `missing` as a literal; not shorter |
 | `&` / `\|` | `&&` / `\|\|` | avoids the binds-tighter-than-comparison trap |
 | `unique` | `countuniq`, `uniqvalue`, `strjoinuniq` | a whole-vector `unique` in a dim spec yields confusing length-mismatch errors |
 | a subset-mask verb (SQL `FILTER`) | `where(cond)` as a chain key, then reduce | the condition stays a visible, traceable dimension — see the Boolean section |

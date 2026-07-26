@@ -6,10 +6,10 @@ An aggregation spec reduces a group of rows to **one value** for a target
 column.
 
 > **Maintenance rule:** this document must list every aggregation-relevant
-> operator in the `SafeOps` registry (`src/safe.jl`). Whenever an operator is
+> operator in the `SafeOps` registry (`src/registry.jl`). Whenever an operator is
 > added to or removed from the shipped registry, update this file (or
 > `safe-dimension-operators.md`). The testset *"operator docs stay in sync"*
-> in `test/safe.jl` fails otherwise.
+> in `test/safe-grammar.jl` fails otherwise.
 
 ## The spec must reduce
 
@@ -81,16 +81,45 @@ Whole-vector functions that produce the aggregate value.
 | `unionall` | flattened union of a vector-of-vectors column | `aggr"unionall(_)"` |
 | `strjoinuniq` | unique non-missing values as strings, sorted and joined.<br><br>`strjoinuniq(_, sep, limit)` with `sep = ","` and `limit = 128` characters (a trailing `…` marks truncation) | `aggr"strjoinuniq(_, \"; \", 64)"` |
 | `wmeanfallback` | weighted mean with a CASCADE of candidate weight columns.<br><br>`wmeanfallback(_, [w1, w2, ...])` tries `w1` first, falls to `w2` if `sum(w1)` is zero or `missing`, and so on.<br><br>A bare number in the list (e.g. `1`) is a constant weight, so it cancels out to an unweighted mean — a natural last resort. `missing` if every candidate fails | `aggr"wmeanfallback(_, [Size, Suitability, 1])"` |
+| `isuniform` | is this column CONSTANT across the group, strictly? `true` only when every value is equal **and none is `missing`** — an unknown unit is a possibly-different unit.<br><br>Two looser readings stay spellable when you want them: `countuniq(x) == 1` ignores missings entirely, and `countuniq(x, skipna = false) == 1` is exactly Julia's `allequal`.<br><br>Almost always the condition of an `onlyif` | `aggr"onlyif(isuniform(unit), sum(_))"` |
 
 Reductions apply plain Julia semantics: a column containing `missing` makes
-`sum`/`mean`/… return `missing`. Three missing-value tools, by role:
+`sum`/`mean`/… return `missing`. Four missing-value tools, by role:
 **drop** — `aggr"sum(skipmissing(_))"`; **replace** —
 `aggr"sum(coalesce(_, 0))"` (`coalesce` = first non-missing wins, elementwise,
 so fallbacks cascade: `coalesce(_, backup, 0)`); **flag** —
-`aggr"count(ismissing(_))"`. `coalesce` also patches missing *results*
-(`aggr"coalesce(uniqvalue(_), \"mixed\")"`). Defaults must be literals — bare
-`missing` is a column name in this grammar, so write `coalesce(x, 0)`, never
-`coalesce(x, missing)`.
+`aggr"count(ismissing(_))"`; **inject** — `aggr"onlyif(cond, sum(_))"`, which
+*produces* a `missing` when `cond` is not true. `coalesce` also patches missing
+*results* (`aggr"coalesce(uniqvalue(_), \"mixed\")"`). Defaults must be
+literals — bare `missing` is a column name in this grammar, so write
+`coalesce(x, 0)`, never `coalesce(x, missing)`.
+
+### Guarding a measure: `onlyif`
+
+`onlyif(cond, x)` is `x` when `cond` is `true` and `missing` otherwise — the
+*inject* role above, and Julia's `ifelse(cond, x, missing)` under a name that
+survives the trust boundary. Use it when a measure must not be **reported** at
+all because another column says it would be meaningless. Totalling across mixed
+units is the motivating case:
+
+```julia
+aggr"onlyif(isuniform(unit), sum(_))"    # the total, or missing if units differ
+aggr"onlyif(nrow > 30, mean(_))"         # suppress means from thin groups
+```
+
+Why this matters more than it looks: the obvious arithmetic workaround is
+actively wrong. `sum(_) * (countuniq(unit) == 1)` yields **`0`** for a mixed
+group — indistinguishable from a genuine zero total — and
+`sum(_) + 0 * uniqvalue(unit)` is a `MethodError` as soon as the unit column is
+text, which it usually is.
+
+`onlyif` is registered elementwise, so it follows its arguments: a scalar
+condition guards an aggregate, a vector condition guards a column
+(`dim"onlyif(quality_ok, sales)"` blanks failed rows). A `missing` condition
+gives `missing`; a non-Boolean one is an error, as in `where`. It is
+deliberately **not** a general `ifelse` — the else-branch is always `missing`,
+because the labelling case belongs to `where` and the numeric cases already
+have spellings (see `design/expressiveness.md`).
 
 `any`/`all` compose directly with `where` for group-level flags — today's
 alternative spellings, `count(cond) > 0` / `count(cond) == length(_)`, still

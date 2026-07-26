@@ -880,3 +880,84 @@ function wmeanfallback(x::AbstractVector, weights::AbstractVector)
     end
     missing
 end
+
+# ---- guarded values ---------------------------------------------------------
+
+"""
+    onlyif(cond, x)
+
+`x` when `cond` is `true`, `missing` otherwise — the **inject** member of the
+missing-value set (`skipmissing` drops, `coalesce` replaces, `ismissing` flags,
+`onlyif` injects).
+
+Registered elementwise, so it follows its arguments: a scalar condition guards
+a scalar (an aggregate), a vector condition guards a vector (a dimension). The
+point is a measure that must not be *reported* when another column says it
+would be meaningless — totalling across mixed units being the motivating case:
+
+```julia
+aggr"onlyif(isuniform(unit), sum(_))"   # the total, or missing if units differ
+dim"onlyif(quality_ok, sales)"          # blank out rows that failed QA
+```
+
+Equivalent to Julia's `ifelse(cond, x, missing)`, which is the spelling a
+trusted `Expr` spec can use — the vocabulary stays portable across the trust
+boundary. A `missing` condition yields `missing`, matching the Kleene
+`&&`/`||`; a non-Boolean condition is an error, as in [`where`](@ref), because
+silently treating a non-Bool as false would blank a measure for no stated
+reason.
+
+Note this is deliberately NOT a general `ifelse`: the else-branch is always
+`missing`. The labelling case belongs to `where`, and the numeric cases have
+existing spellings (`max(x, 0)`, `x * (x > 0)`) — see
+`design/expressiveness.md`.
+"""
+function onlyif(cond, x)
+    cond === missing && return missing
+    isa(cond, Bool) || error(
+        "onlyif: the condition must be Boolean (e.g. isuniform(unit)), got " *
+        repr(cond))
+    cond ? x : missing
+end
+
+"""
+    isuniform(x) -> Bool
+
+`true` when every element of `x` is the same value **and none is `missing`** —
+strict, so a single unknown makes the answer `false`.
+
+The guard for "this aggregate only means something if that column is constant
+across the group", typically a unit, currency or scale column:
+
+```julia
+aggr"onlyif(isuniform(unit), sum(_))"
+```
+
+Strictness is the whole point: an *unknown* unit is a *possibly different*
+unit, so `["USD", missing]` is not uniform. The two more permissive readings
+stay spellable with existing operators when you actually want them, which is
+why only the strict one is registered:
+
+| spelling | `["USD", missing]` | `[missing, missing]` |
+|---|---|---|
+| `countuniq(x) == 1` | uniform | not uniform |
+| `countuniq(x, skipna = false) == 1` (≡ Julia's `allequal`) | not uniform | uniform |
+| `isuniform(x)` | not uniform | not uniform |
+
+An empty collection is **not** uniform: there is nothing to establish agreement
+between, and the conservative answer is the one that refuses to report a
+number. Comparison is by `isequal`, so it works on any element type.
+"""
+function isuniform(x)
+    seen = false
+    ref = nothing
+    for v in x
+        ismissing(v) && return false      # unknown ⇒ possibly different
+        if !seen
+            ref, seen = v, true
+        elseif !isequal(v, ref)
+            return false
+        end
+    end
+    seen                                  # empty ⇒ false
+end
