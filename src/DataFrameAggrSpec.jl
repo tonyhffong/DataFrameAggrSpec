@@ -54,8 +54,17 @@ include("suggest.jl")     # OSA "did you mean" helpers for user-facing errors
 include("diagnostics.jl") # SpecError: the machine channel beside the message
 include("aggrspec.jl")    # aggregation-spec compiler (liftAggrSpecToFunc) + AggrHints
 include("verbs.jl")       # discretize / topnames / uniqvalue / unionall / lag / lead / rank
-include("safe.jl")        # UNTRUSTED whitelist DSL: aggr"..." / dim"..." (needs verbs;
-                          # dimension.jl signatures need SafeDimSpec -- keep this order)
+# UNTRUSTED whitelist DSL: aggr"..." / dim"...", split by job. Only the first
+# has a hard order requirement (it registers verbs at LOAD time, so it follows
+# verbs.jl) and only the last is required before dimension.jl (whose signatures
+# mention SafeDimSpec). The middle four are function bodies and consts, ordered
+# for reading rather than for the loader -- see the header of safe.jl.
+include("registry.jl")    # SafeOps / SafeOpShapes, registerop!, shipped operators
+include("rejections.jl")  # the error vocabulary + with_spec_context
+include("checks.jl")      # arity / keyword / shape checks, decided at parse time
+include("compile.jl")     # the eval-free AST -> closure compiler
+include("parse.jl")       # Meta.parse, modifier peeling, where desugaring
+include("safe.jl")        # spec types + the public doors (parseaggr / parsedim)
 include("dimension.jl")   # WindowDim / PivotDim dimensioning engine
 include("chain.jl")       # chains: left-context pivot lists + dimspec
 include("pivot.jl")       # hints-driven grouped aggregation

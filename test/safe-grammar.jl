@@ -539,6 +539,34 @@ end
     end
 end
 
+@testset "the entry-point prefix comes from the choke point, not the sites" begin
+    # After the safe.jl split, no parse-path helper threads a `what` parameter:
+    # `with_spec_context` prefixes any message that lacks one (G12), the same
+    # way dimension.jl's order-entry helpers have always relied on it. These
+    # pin the property end to end, since a helper that started self-prefixing
+    # again would still pass every message-content test.
+    for (f, want) in [(() -> parseaggr("maen(_)"),        "parseaggr: "),
+                      (() -> parsedim("cumsmu(x)"),       "parsedim: "),
+                      (() -> parseaggr("topnames()"),     "parseaggr: "),
+                      (() -> parsedim("x = 1"),           "parsedim: "),
+                      (() -> parseaggr("sum("),           "parseaggr: "),
+                      (() -> parsedim("cumsum(x) |> orderby(d => :dsc)"), "parsedim: ")]
+        e = try (f(); nothing) catch e; e end
+        @test e isa SpecError && startswith(e.msg, want)
+        @test !occursin(want, e.msg[length(want)+1:end])   # exactly once
+    end
+
+    # the three apply-time diagnostics inside a nested grouped reduction are the
+    # exception: no wrapper is active there, so they name the CONSTRUCT rather
+    # than an entry point (claiming "parsedim:" would be a lie -- parsing
+    # succeeded long before)
+    df = DataFrame(g = ["a", "b"], v = [1, 2])
+    e = try (dim(df, [:d => dim"mean(sum(v) |> groupby(nrow(v)))"]); nothing) catch e; e end
+    @test e isa SpecError && e.code === :groupby_key
+    @test occursin("grouped reduction (|> groupby)", e.msg)
+    @test !occursin("parsedim", e.msg)
+end
+
 @testset "SpecError: source spans" begin
     err(f) = try (f(); nothing) catch e; e end
     at(e) = e.span === nothing ? nothing : e.spec[e.span]

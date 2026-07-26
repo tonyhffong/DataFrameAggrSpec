@@ -87,6 +87,7 @@ e.spec[1:first(e.span)-1] * string(e.fix) *
 | `:unknown_kwarg` | an option name the function does not accept |
 | `:symbol_literal` | the colon flip — `:col` where a bare word belongs |
 | `:groupby_literal` | a literal where a grouping key belongs |
+| `:groupby_key` | a nested `\\|> groupby` key that is not a usable column — the only code raised at APPLY time, so it carries no `spec` |
 | `:order_entry` | a malformed `orderby` entry, including a bare `:asc`/`:desc` |
 | `:unknown_column` | a column reference not present in the frame |
 | `:bare_name` | a lone identifier used where a call is required |
