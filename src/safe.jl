@@ -107,11 +107,30 @@ Base.show(io::IO, s::SafeDimSpec) = print(io, "dim\"", s.source, "\"")
 # required_columns (dimension.jl).
 byrefs(by) = Symbol[c for k in by for c in (isa(k, Symbol) ? (k,) : k.cols)]
 
-# checkcols: validate a spec's column references against the columns a host
-# knows to exist (typically propertynames(df)), with did-you-mean repair --
-# the TUI path, where a misspelled column would otherwise surface much later
-# as a bare DataFrames indexing error. `_` is the aggregation target, not a
-# column reference. Returns the spec for chaining.
+"""
+    checkcols(spec, columns::AbstractVector{Symbol}) -> spec
+
+Validate a parsed spec's column references against the columns a frame
+actually has (typically `propertynames(df)`), throwing a [`SpecError`](@ref)
+with did-you-mean repair for the first one that does not exist. Returns the
+spec, so it composes.
+
+This is the **schema** half of a two-phase check: `parseaggr(s)` validates
+grammar with no frame in sight, and `checkcols` adds the frame when one turns
+up. `parseaggr(s; columns)` / `parsedim(s; columns)` do both in one call.
+Without it, a misspelled column surfaces much later as a bare DataFrames
+indexing error naming neither the spec nor the mistake.
+
+Checks every reference the spec carries, naming *where* it was written — the
+spec body, an `orderby` key, or (for dim specs) a `groupby` key. `_` is the
+aggregation target, not a column reference, and is skipped.
+
+```julia
+checkcols(aggr"sum(qtty)", [:qty, :region])
+# ERROR: checkcols: spec "sum(qtty)" references column 'qtty', which does not
+#        exist -- did you mean 'qty'?
+```
+"""
 function checkcols(s::Union{SafeAggrSpec,SafeDimSpec}, columns::AbstractVector{Symbol})
     # (column, where it was written) -- naming the modifier matters when a spec
     # references the same-looking name in two places, and it tells the user
@@ -147,6 +166,36 @@ end
 const SafeSpecCache = Dict{Tuple{Symbol,String},Any}()
 
 
+"""
+    parseaggr(s::AbstractString; columns = nothing) -> SafeAggrSpec
+
+Parse an **untrusted aggregation spec** — a string that may have come from an
+end user's text field — into a callable spec object. `aggr"..."` is
+compile-time sugar for this call.
+
+Eval-free and default-deny: only whitelisted operators exist ([`listops`](@ref)),
+the result is an ordinary closure at the current world age, and hostile input
+cannot execute. Cheap enough to re-parse on a keystroke, and cached by source
+string.
+
+In this grammar a bare identifier is a **column**, `_` is the **target
+column** being aggregated, and `:sym` is only an option *value* — the mirror
+image of a trusted `Expr` spec, where `:col` is the column. The spec must
+reduce its group to one value; `aggr"cumsum(_)"` is rejected at parse time.
+
+Pass `columns` (typically `propertynames(df)`) to validate column references
+in the same call — see [`checkcols`](@ref), which is the standalone form.
+
+Every rejection is a [`SpecError`](@ref) carrying the human message plus
+`code`/`token`/`fix`/`span` for linters, editors and agents.
+
+```julia
+parseaggr("sum(_ * wt) / sum(wt)")
+parseaggr("sum(qtty)"; columns = propertynames(df))   # ... did you mean 'qty'?
+```
+
+See also [`parsedim`](@ref), `spec_templates`, `docs/safe-aggregation-operators.md`.
+"""
 function parseaggr(
     s::AbstractString;
     columns::Union{Nothing,AbstractVector{Symbol}} = nothing,
@@ -237,6 +286,32 @@ function parseaggr_impl(src::String)
     SafeAggrSpec(src, fname, (vs...) -> thunk(vs), cols, order)
 end
 
+"""
+    parsedim(s::AbstractString; columns = nothing) -> SafeDimSpec
+
+Parse an **untrusted dimension spec** — a string that may have come from an
+end user's text field — into a callable spec object. `dim"..."` is
+compile-time sugar for this call.
+
+Same eval-free, default-deny guarantees as [`parseaggr`](@ref); the
+differences are the grammar's: a bare identifier is a column, `_` is **not**
+allowed (it is the aggregation target), and two postfix modifiers may be
+attached to the spec — `spec |> orderby(cols...)` sorts the partition before
+an order-sensitive verb runs, and `spec |> groupby(keys...)` aggregates the
+measure at that granularity first so the verb classifies groups. (`∘` is
+accepted for `|>` with identical meaning; both parse with Julia's precedence,
+so parenthesize a spec whose top level is arithmetic or a comparison.)
+
+Pass `columns` to validate column references, including those appearing only
+in `orderby`/`groupby` keys — see [`checkcols`](@ref).
+
+```julia
+parsedim("cumsum(sales) |> orderby(date)")
+parsedim("topnames(District, TestScr, 5)")
+```
+
+See also `docs/safe-dimension-operators.md`.
+"""
 function parsedim(
     s::AbstractString;
     columns::Union{Nothing,AbstractVector{Symbol}} = nothing,

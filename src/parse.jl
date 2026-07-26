@@ -98,6 +98,12 @@ function peel_modifiers(ex)
             end
             tok = Base.Meta.isexpr(rhs, :call) && isa(rhs.args[1], Symbol) ?
                   rhs.args[1] : isa(rhs, Symbol) ? rhs : nothing
+            # SQL's PARTITION BY vocabulary must not fall through to the
+            # generic message below, which reads as "use groupby" -- the one
+            # correction that runs and silently computes something else
+            tok !== nothing && in(squash(tok), ForeignPartitionWords) &&
+                specerror(partition_reminder(tok);
+                          code = :foreign_spelling, token = tok)
             r = tok === nothing ? (hint = "", fix = nothing) :
                 repair(tok, SafeModifiers)
             specerror("expected a modifier call (" *

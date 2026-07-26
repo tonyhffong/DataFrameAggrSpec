@@ -32,7 +32,7 @@ everything below:
    only thing that makes a whitelist usable by someone who has not read the
    whitelist.
 
-The result: over a hundred `error` sites across `src/`, 56 foreign-spelling
+The result: over a hundred `error` sites across `src/`, 57 foreign-spelling
 redirects, 18 tailored syntax rejections, and a whole file (`templates.jl`) of
 starter specs. That is a lot of code for something that never computes an
 answer. This note is why it earns its place.
@@ -194,6 +194,20 @@ lone unrecognised word in an aggregation field is far likelier to be a column
 than a mistyped verb. `groupby_literal_error` names the *colon* and the *quotes*
 specifically, because `:col`/`"col"` is by far the commonest way to write a key
 wrong — every other DataFrames API wants exactly that.
+
+One rung exists to intercept a habit that would otherwise fail **silently**,
+which makes it the most load-bearing of all: SQL's window-partition vocabulary
+(`ForeignPartitionWords` — `partitionby`, `partition`, `within`, `over`) in
+modifier position. There is no in-spec spelling for a window partition (it is
+the chain's left context), so the generic "expected a modifier call (orderby,
+groupby)" message reads as an instruction to "correct" `partitionby` to
+`groupby` — which parses, runs, and computes something else entirely
+(aggregate-then-classify). `partition_reminder` names the chain and warns off
+`groupby` explicitly; the nested position redirects to the composite `groupby`
+instead, because per-key evaluation inside a spec *is* the nested form. A
+rejection ladder can only steer mistakes that produce errors — where a foreign
+habit maps onto legal text with different semantics, the interception has to
+happen at the *nearest* error the user does hit.
 
 ### Checks decided at parse time
 
@@ -482,9 +496,12 @@ change?"* and the table for *"what changed?"*.
 
 The dangerous direction is the quiet one: checks getting *weaker* — a new
 `kwargs...` method, a host verb registered without a shape — fails nothing and
-simply catches less. Such a digest would also be the natural invalidation key
-for `SafeSpecCache`, which currently holds closures over operators a later
-`registerop!` may have replaced.
+simply catches less. Such a digest would also be the natural *automatic*
+invalidation key for `SafeSpecCache`, which holds closures over operators a
+later `registerop!` may have replaced. The manual escape hatch now exists —
+`clearcaches!()`, documented in `docs/extending-the-grammar.md` as part of the
+host recipe — so the remaining gap is only that nothing invalidates on its
+own.
 
 **3 — Repair and vocabulary internals are unexported** (`nearest`,
 `didyoumean`, `ForeignSpellings`, `registry_summary`). Much less pressing now
@@ -525,7 +542,7 @@ them accidental:
    converges**: an error that says what to type instead is precisely what a
    model needs to self-correct. The rejection ladder is already a repair
    oracle — built for humans, and the right shape by accident.
-2. **`ForeignSpellings` as prompt context.** 56 pairs of "what people say
+2. **`ForeignSpellings` as prompt context.** 57 pairs of "what people say
    elsewhere → what it is called here" enumerate exactly the mistakes a
    SQL/pandas-trained model makes. `SafeRejections` and `expressiveness.md`'s
    deliberately-unregistered table serve the same purpose.

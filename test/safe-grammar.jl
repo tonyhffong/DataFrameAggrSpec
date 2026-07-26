@@ -435,6 +435,33 @@ end
     # the declined-by-design entries point at what covers the use case
     @test msg2("unique(x)", "uniqvalue(x)")
     @test msg2("filter(x > 1)", "as a chain key")
+
+    # Excel's IF must hit the foreign-spelling rung, NOT the OSA rung -- the
+    # repair "did you mean 'in'?" is confidently wrong, which is worse than
+    # no repair (G3)
+    @test msg2("IF(_ > 0, _, 0)", "use where(cond)")
+    @test !msg2("IF(_ > 0, _, 0)", "did you mean")
+
+    # SQL's count(*): parses as the function `*` in argument position, which
+    # used to compile to a column named '*' and die inside DataFrames at
+    # apply time. The commonest aggregation spelling in existence deserves a
+    # parse-time answer.
+    @test msg2("count(*)", "spelled 'nrow'")
+    @test msg2("sum(+)", "is an operator, not a column")
+
+    # SQL's OVER (PARTITION BY ...): there is no in-spec spelling for a
+    # window partition -- and the generic modifier message must not fire,
+    # because it reads as "use groupby", the one correction that runs and
+    # silently computes something else (pivot: aggregate-then-classify)
+    @test msg2("cumsum(sales) |> partitionby(region)", "chain's left context")
+    @test msg2("cumsum(sales) |> partition(region)", "chain's left context")
+    @test msg2("cumsum(sales) |> within(region)", "chain's left context")
+    @test msg2("cumsum(sales) |> over(region)", "chain's left context")
+    @test msg2("cumsum(sales) ∘ PARTITION_BY(region)", "chain's left context")
+    @test msg2("cumsum(sales) |> partitionby(region)", "NOT a partition")
+    # nested position redirects to the composite groupby instead -- per-key
+    # evaluation inside a spec IS the nested groupby
+    @test msg2("mean(sum(_) |> partitionby(year))", "spelled groupby")
 end
 
 @testset "repair suggestions stay useful" begin
@@ -487,6 +514,11 @@ end
     # codes distinguish the ladder's rungs, so a consumer can branch
     @test err(() -> parsedim("(a > 1) & (b < 2)")).code == :boolean_operator
     @test err(() -> parseaggr("avg(_)")).code           == :foreign_spelling
+    @test err(() -> parseaggr("count(*)")).code         == :foreign_spelling
+    @test err(() -> parsedim("cumsum(x) |> partitionby(g)")).code ==
+          :foreign_spelling
+    @test err(() -> parsedim("cumsum(x) |> partitionby(g)")).token ==
+          :partitionby
     @test err(() -> parsedim("dense_rank(x)")).code     == :spelling_convention
     @test err(() -> parsedim("orderby(date)")).code     == :modifier_misuse
     @test err(() -> parsedim("topnames()")).code        == :arity
@@ -650,4 +682,18 @@ end
     # (design/glyph-choice.md) reads as a qualified name without this
     @test msg2("cumsum(x).orderby(date)", "postfix modifier")
     @test msg2("cumsum(x).orderby(date)", "never '.'")
+
+    # the glyph PRECEDENCE trap: '∘' binds as tightly as '*' and '|>' tighter
+    # than a comparison, so on a spec whose top level is arithmetic or a
+    # comparison the modifier silently attaches to the nearest operand --
+    # the README's advertised shape, carved up by Julia's parser. The
+    # rejection must lead with "parenthesize" (the same site also catches a
+    # deliberate nested orderby, so it names both readings).
+    @test msg2("sales - lag(sales) ∘ orderby(date)", "wrap the spec in parentheses")
+    @test msg2("sales > 12 |> orderby(date)", "wrap the spec in parentheses")
+    # ... and the parenthesized form the message asks for is accepted
+    @test parsedim("(sales - lag(sales)) |> orderby(date)").order == [:date => false]
+    # a genuinely nested orderby-on-groupby still gets the subgroup answer
+    @test msg2("mean(sum(_) |> groupby(year) |> orderby(year))",
+               "ordered by their groupby keys")
 end

@@ -30,8 +30,9 @@ module DataFrameAggrSpec
 #     (top-N ranking with tie/dense/"Others" handling), `quantiles`, `where`
 #     (self-labeling Boolean flag), `lag`/`lead`, the ranking quartet
 #     `rank`/`denserank`/`ordinalrank`/`tiedrank` (NOT exported — name
-#     collisions; see the export block below), `wmeanfallback`, and the
-#     date-bucket labels `yyyy`/`yyyyq`/`yyq`/`yyyymm`/`yymm`.
+#     collisions; see the export block below), `wmeanfallback`, `hhi`
+#     (Herfindahl-Hirschman concentration), and the date-bucket labels
+#     `yyyy`/`yyyyq`/`yyq`/`yyyymm`/`yymm`.
 #
 # SECURITY / TRUST BOUNDARY — the rule: Expr/Symbol/Function specs are TRUSTED;
 # plain Strings are UNTRUSTED and parsed by the safe whitelist grammar (safe.jl —
@@ -76,7 +77,7 @@ include("templates.jl")   # PROACTIVE suggestion: starter templates + completion
 export liftAggrSpecToFunc, defaultAggr
 # Untrusted whitelist DSL
 export SafeAggrSpec, SafeDimSpec, parseaggr, parsedim, @aggr_str, @dim_str
-export registerop!, registerclassifier!, listops, checkcols, opshape
+export registerop!, registerclassifier!, listops, checkcols, opshape, clearcaches!
 # Structured diagnostics: the machine channel beside the human message. Every
 # rejection of user-supplied spec text is a SpecError carrying a code, the
 # offending token and (when one exists) a drop-in fix -- for linters, LSP
@@ -96,7 +97,7 @@ export AggrHints, resolveaggr, aggrvalue, agg
 export dimspec, dim, dim!
 # Aggregation / presentation verbs
 export uniqvalue, countuniq, unionall, strjoinuniq, discretize, topnames, quantiles, lag, lead, where
-export wmeanfallback
+export wmeanfallback, hhi
 # Guarded values: `onlyif` injects a missing under a condition (the fourth
 # missing-value role beside drop/replace/flag), `isuniform` is the strict
 # "this column is constant across the group" predicate it is usually given.

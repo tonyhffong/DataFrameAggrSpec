@@ -81,6 +81,7 @@ Whole-vector functions that produce the aggregate value.
 | `unionall` | flattened union of a vector-of-vectors column | `aggr"unionall(_)"` |
 | `strjoinuniq` | unique non-missing values as strings, sorted and joined.<br><br>`strjoinuniq(_, sep, limit)` with `sep = ","` and `limit = 128` characters (a trailing `…` marks truncation) | `aggr"strjoinuniq(_, \"; \", 64)"` |
 | `wmeanfallback` | weighted mean with a CASCADE of candidate weight columns.<br><br>`wmeanfallback(_, [w1, w2, ...])` tries `w1` first, falls to `w2` if `sum(w1)` is zero or `missing`, and so on.<br><br>A bare number in the list (e.g. `1`) is a constant weight, so it cancels out to an unweighted mean — a natural last resort. `missing` if every candidate fails | `aggr"wmeanfallback(_, [Size, Suitability, 1])"` |
+| `hhi` | **Herfindahl–Hirschman index**: `sum((x / sum(x))^2)`, the concentration of a market/portfolio/supplier mix. `1/n` (n equal participants) to `1` (one holds everything).<br><br>Takes **sizes, not shares** — the denominator is computed for you. Kwargs: `scale` (`10000` for the antitrust convention, DOJ/FTC thresholds 1500/2500), `skipna` (default `true`; `false` propagates, so any unknown size makes the index unknown).<br><br>`missing` — never a number — when a share is undefined: an empty group, a zero total, or any negative value. Usually two-stage, since concentration is *across a participant* (see below) | `aggr"hhi(sum(_) \|> groupby(store))"` |
 | `isuniform` | is this column CONSTANT across the group, strictly? `true` only when every value is equal **and none is `missing`** — an unknown unit is a possibly-different unit.<br><br>Two looser readings stay spellable when you want them: `countuniq(x) == 1` ignores missings entirely, and `countuniq(x, skipna = false) == 1` is exactly Julia's `allequal`.<br><br>Almost always the condition of an `onlyif` | `aggr"onlyif(isuniform(unit), sum(_))"` |
 
 Reductions apply plain Julia semantics: a column containing `missing` makes
@@ -224,6 +225,36 @@ aggr"last(sum(_) |> groupby(year))"      # the LATEST year's total
   # inner first(_) falls back to unspecified frame order, same as any
   # order-sensitive verb used bare.
   ```
+
+### Concentration: `hhi` is normally two-stage
+
+`hhi` is the usual reason to reach for the nested form, because concentration
+is always *across a participant* — stores, suppliers, customers, issuers —
+while the rows in front of you are usually transactions. The inner stage
+totals per participant, the outer stage squares and sums the shares:
+
+```julia
+# per region: how concentrated are sales across that region's STORES?
+agg(df, [:region]; cols = [:sales => aggr"hhi(sum(_) |> groupby(store))"])
+
+aggr"hhi(sum(_) |> groupby(supplier), scale = 10000)"   # antitrust points
+```
+
+Writing `aggr"hhi(_)"` instead computes the concentration across the group's
+**rows**, which is what you want only when one row *is* one participant (a
+pre-aggregated frame). The distinction is not one the engine can make for you:
+both are legal, and they answer different questions.
+
+Since `hhi` returns `missing` rather than a number for a degenerate group, a
+concentration measure never silently reports `0.0` for an empty group or a
+plausible-looking out-of-range figure for a column containing refunds. The
+naive spelling does exactly that, which is why the verb exists at all:
+
+```julia
+aggr"sum((_ / sum(_))^2)"   # ✗ 0.0 on an empty group, NaN on a zero total,
+                            #   and 5.0 (!) on a column with negatives
+aggr"hhi(_)"                # ✓ missing in all three cases
+```
 
 ## Elementwise math (usable inside reductions)
 

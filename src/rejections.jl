@@ -76,6 +76,13 @@ const ForeignSpellings = Dict{Symbol,String}(
     :ifelse         => "where(cond), which labels both sides -- or " *
                        "onlyif(cond, x) when the other branch is missing, or " *
                        "plain arithmetic, e.g. x * (x > 0)",
+    # Excel's IF(cond, a, b). Keyed as :if via squash, so only the uppercase
+    # spelling reaches this table (lowercase `if(` is a Julia keyword and dies
+    # at Meta.parse). Without this row the OSA rung "repairs" IF to `in` -- a
+    # confidently wrong answer, the exact failure G3 exists to prevent.
+    :if             => "where(cond), which labels both sides -- or " *
+                       "onlyif(cond, x) when the other branch is missing, or " *
+                       "plain arithmetic, e.g. x * (x > 0)",
     # SQL's NULLIF(a, b) is null WHEN a = b -- the opposite reading of the
     # name, so this redirect has to invert the condition rather than just
     # rename the verb.
@@ -96,6 +103,15 @@ const ForeignSpellings = Dict{Symbol,String}(
     :rownumber      => "ordinalrank(x)",
     :rowid          => "ordinalrank(x)",
     :ntile          => "quantiles(x, ngroups = 4)",
+    # the index ships under its acronym (what analysts type); the full name is
+    # far past any edit budget, so it needs the redirect (checklist item 8)
+    :herfindahl     => "hhi(x) -- sizes, not shares; hhi(x, scale = 10000) " *
+                       "for antitrust points",
+    :herfindahlhirschman => "hhi(x) -- sizes, not shares; " *
+                       "hhi(x, scale = 10000) for antitrust points",
+    :hhiindex       => "hhi(x)",
+    :concentration  => "hhi(x) for the Herfindahl-Hirschman index, or " *
+                       "topnames(labels, values, n) for a top-N share view",
     :percentile     => "quantile(x, 0.9)",
     :percentilecont => "quantile(x, 0.9)",
     :top            => "topnames(labels, values, n)",
@@ -124,6 +140,25 @@ const ForeignSpellings = Dict{Symbol,String}(
 
 # lookup key for ForeignSpellings and the no-underscores redirect
 squash(name) = Symbol(replace(lowercase(string(name)), "_" => ""))
+
+# SQL's window-partition vocabulary (`OVER (PARTITION BY ...)`) arriving in
+# MODIFIER position (`spec |> partitionby(region)`). This cannot join
+# ForeignSpellings: there deliberately is no in-spec spelling for a window
+# partition (design/expressiveness.md, the one known residual gap) -- the
+# partition is the CHAIN's left context. Naming that is load-bearing, because
+# the generic "expected a modifier call (orderby, groupby)" rejection reads as
+# an instruction to "correct" partitionby to groupby -- which parses, runs,
+# and computes something else entirely (pivot: aggregate-then-classify). The
+# one habit the ladder must intercept is the one that would otherwise fail
+# SILENTLY. Matched via squash, so PARTITION_BY / partitionBy land here too.
+const ForeignPartitionWords = (:partitionby, :partition, :within, :over)
+
+partition_reminder(tok::Symbol) =
+    "'" * string(tok) * "' -- a window partition (SQL's OVER (PARTITION BY " *
+    "...)) is not written in the spec here: it is the chain's left context, " *
+    "e.g. dim(df, [:region, :cum => dim\"cumsum(sales) |> orderby(date)\"]) " *
+    "runs per region. ('|> groupby(keys...)' is NOT a partition -- it " *
+    "aggregates the measure per key and classifies the groups.)"
 
 # the whitelist as a user should read it. The symbolic entries (dotted aliases,
 # unicode twins) are two thirds of listops() and teach nothing when spelled out

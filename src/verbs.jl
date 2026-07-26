@@ -881,6 +881,61 @@ function wmeanfallback(x::AbstractVector, weights::AbstractVector)
     missing
 end
 
+"""
+    hhi(x; scale = 1, skipna = true)
+
+The **Herfindahl–Hirschman index** of `x`: the sum of squared shares,
+`sum((xᵢ / sum(x))^2)` — the standard concentration measure for market share,
+portfolio weight, supplier or customer mix.
+
+Ranges from `1/n` (n equal participants) to `1` (one participant holds
+everything), so it reads as "the share held by the equivalent monopolist".
+`scale = 10000` gives the antitrust convention (shares in percent, DOJ/FTC
+thresholds 1500 and 2500) — `hhi(x, scale = 10000)`.
+
+`x` is a vector of **sizes, not shares**: the denominator is computed here, so
+the values need no prior normalization. Feeding it shares that already sum to
+1 is harmless for the same reason.
+
+Returns `missing` rather than a number whenever a share is undefined — an
+empty group, a total of zero, or any negative value (a negative share makes
+the index meaningless, and the arithmetic would otherwise return a
+plausible-looking number outside `[0, 1]`). `skipna = true` (the default,
+matching [`countuniq`](@ref)/[`uniqvalue`](@ref)) drops missings and computes
+over the known values, so the denominator is *their* total; `skipna = false`
+propagates, giving `missing` when any value is unknown — the strict reading,
+since an unknown participant size makes the whole index unknown.
+
+Its usual form is two-stage: rows are transactions, and concentration is
+across some *participant*, so the inner stage totals per participant first.
+
+```julia
+agg(df, [:region]; cols = [:sales => aggr"hhi(sum(_) |> groupby(store))"])
+# per region: concentration of sales across that region's stores
+
+aggr"hhi(_, scale = 10000)"       # antitrust points, one row per participant
+dim"onlyif(hhi(sales) > 0.25, sales)"   # ... or as a guard
+```
+"""
+function hhi(x; scale::Real = 1, skipna::Bool = true)
+    total = zero(Float64)
+    ss = zero(Float64)
+    for v in x
+        if ismissing(v)
+            skipna ? continue : return missing
+        end
+        v < 0 && return missing        # a negative share is not a share
+        f = Float64(v)
+        total += f
+        ss += f * f
+    end
+    # empty, all-missing, or a zero total: the shares are undefined, and the
+    # naive arithmetic would answer 0.0 ("perfect competition") or NaN. Same
+    # instinct as isuniform's empty case -- refuse to report a number.
+    total > 0 || return missing
+    scale * ss / (total * total)
+end
+
 # ---- guarded values ---------------------------------------------------------
 
 """

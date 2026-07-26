@@ -15,7 +15,7 @@ and the one gap that is knowingly still open. It is about the *language*;
 Every operator that wraps a Base/stdlib function **keeps its Julia name**.
 Invented names are reserved for verbs this package authors (`topnames`,
 `discretize`, `quantiles`, `uniqvalue`, `countuniq`, `strjoinuniq`,
-`unionall`, `where`, `wmeanfallback`, the date buckets).
+`unionall`, `where`, `wmeanfallback`, `hhi`, the date buckets).
 
 This is not style preference — it is what makes vocabulary **portable across
 the trust boundary**. The same words must work on both sides of the colon
@@ -247,6 +247,56 @@ A quick index, so these are not rediscovered one at a time:
 | `.` as modifier separator | `∘` / `\|>` | see `glyph-choice.md` — breaks the "no dots, ever" trust-boundary line |
 | aliases for Base names | the Julia name | breaks vocabulary portability across the trust boundary |
 
+## When an expressible measure earns a verb anyway (`hhi`, `wmeanfallback`)
+
+Checklist item 3 says a new spelling for an existing meaning is vocabulary
+debt, and it is the right default. Two shipped reductions are exceptions, and
+they are exceptions on the same ground, worth stating once so the *next*
+proposal can be judged against it rather than against precedent.
+
+Both are expressible in the grammar as it stands:
+
+```julia
+aggr"sum(_ * wt) / sum(wt)"     # ≡ wmeanfallback(_, [wt]) in the happy case
+aggr"sum((_ / sum(_))^2)"       # ≡ hhi(_) in the happy case
+```
+
+What the verb adds is not brevity — it is **what happens when the happy case
+does not hold**. The naive spellings answer degenerate groups with numbers:
+
+| group | `sum((_ / sum(_))^2)` | `hhi(_)` |
+|---|---|---|
+| empty | `0.0` — reads as *perfect competition* | `missing` |
+| total of zero | `NaN` — poisons every downstream reduction | `missing` |
+| contains negatives (refunds, reversals) | `5.0` — outside `[0, 1]`, silently meaningless | `missing` |
+
+The test is therefore not "is it expressible" but **"does the expressible form
+fail loudly?"** A measure whose naive spelling merely *errors* on the edge case
+does not need a verb — the user sees the error and fixes it. A measure whose
+naive spelling returns a **plausible-looking wrong number** does, because
+nothing downstream can tell that value from a real one. This is the same
+argument `onlyif` ships on (a mixed-unit total is a number, not an error) and
+the same instinct behind `isuniform`'s empty case: *refuse to report a number*.
+
+Two consequences worth keeping:
+
+- The verb must not be a **strictly better** spelling of the naive form, or it
+  really is an alias. Both of these have a genuinely different contract
+  (`missing` where the arithmetic gives a number), which is also why neither
+  can be implemented as a rewrite of the expression.
+- The naive spelling stays legal. Nothing is removed from the grammar, and a
+  user who wants `NaN` semantics can still write the arithmetic — the verb is
+  the safe default, not a prohibition.
+
+`hhi` also illustrates the *other* half of the checklist: item 6 (a domain
+metric is `registerop!` territory) is about metrics whose **definition** is
+host-specific — a seasonality adjustment, a firm's own risk score. HHI has one
+textbook definition, is not tied to an industry (market share, portfolio
+weight, supplier mix, customer concentration are the same computation), and
+composes with the shipped composite-aggregation form that its realistic use
+requires (`hhi(sum(_) |> groupby(store))`). A metric that needed a host's
+parameters to even be defined would still be `registerop!` territory.
+
 ## When a shipped verb should not be exported
 
 Verbs are exported so trusted `Expr` specs — which `Core.eval` in `Main` — can
@@ -319,7 +369,10 @@ Status: accepted as-is, same posture as the residual gap above.
    governing law.
 3. Does it introduce a second way to say something that already has a
    spelling? Prefer the existing one; variance is fine, but a *new* spelling
-   for an existing meaning is vocabulary debt.
+   for an existing meaning is vocabulary debt. The one sanctioned exception:
+   the expressible form returns a **plausible-looking wrong number** on a
+   degenerate input where the verb returns `missing` — see *When an
+   expressible measure earns a verb anyway* (`hhi`, `wmeanfallback`).
 4. Could two channels now specify the same option? Make the combination an
    error, not a precedence rule (`composition-rules.md` R6).
 5. Is the grouping column *data in the spec* (like `topnames`)? Then it needs

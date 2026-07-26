@@ -76,7 +76,61 @@ function _register!(name::Symbol, f::Base.Callable, shape::Symbol)
     f
 end
 
-# extension is a trusted act done in host code, never via spec strings
+"""
+    registerop!(name::Symbol, f; shape::Symbol = :unknown) -> f
+
+Add `f` to the whitelist under `name`, making it callable from untrusted spec
+strings (`aggr"name(...)"` / `dim"name(...)"`).
+
+Extension is a **trusted act performed in host code** — there is no
+spec-string syntax that reaches this function, so a user typing into a text
+field can never add vocabulary. Trusted `Expr` specs need no registration:
+they are evaluated against `Main` and already see your package's functions.
+
+`name` may not contain `.` or `!`, and may not be `orderby` or `groupby`
+(reserved modifier names).
+
+# `shape`
+
+How many values `f` returns *relative to its input rows* —
+`:reduce` (one per group), `:map` (one per row), `:elementwise` (follows its
+arguments), `:filter` (many, not row-aligned), or `:unknown`. Determine it by
+**probing** `f` with a scalar and a vector, not by reading its name.
+
+Declaring it is optional but recommended: `:unknown` (the default) makes every
+parse-time shape check *skip* rather than guess, so `aggr"myverb(_)"` is
+accepted even when `myverb` returns one value per row. See [`opshape`](@ref).
+
+# What `f` receives
+
+Column **vectors**, not individual values — `registerop!` wraps nothing. A
+`:reduce` or `:map` operator wants the vector anyway; an `:elementwise` one
+usually needs a broadcasting wrapper you supply yourself:
+
+```julia
+registerop!(:band, (x...) -> broadcast(band, x...); shape = :elementwise)
+```
+
+# Re-registration
+
+Re-registering an existing `name` does **not** affect already-parsed specs,
+including specs re-parsed from identical text — parsed specs are cached by
+source string and hold a closure over the operator as it was. Call
+[`clearcaches!`](@ref) after replacing an operator. Registering a *new* name
+is always safe.
+
+```julia
+using Statistics
+registerop!(:geomean, x -> exp(mean(log.(x))); shape = :reduce)
+liftAggrSpecToFunc(:sales, aggr"geomean(_)")(df)
+```
+
+Registered operators are assumed **pure** (invariant R9,
+`design/composition-rules.md`) — they may be called per group, per partition
+and in any order. Every guidance surface reads the registry live, so one call
+also adds `name` to [`listops`](@ref), `spec_vocabulary` and the did-you-mean
+repair. See `docs/extending-the-grammar.md` for the full recipe.
+"""
 function registerop!(name::Symbol, f::Base.Callable; shape::Symbol = :unknown)
     s = string(name)
     if occursin(".", s) || occursin("!", s)
@@ -89,7 +143,57 @@ function registerop!(name::Symbol, f::Base.Callable; shape::Symbol = :unknown)
     _register!(name, f, shape)
 end
 
+"""
+    listops() -> Vector{Symbol}
+
+Every operator name the untrusted grammar currently accepts, sorted —
+the shipped defaults plus anything a host has added with [`registerop!`](@ref).
+
+This is the live registry, so it is also what the rejection messages fall back
+to when they have nothing more specific to suggest. The shipped entries are
+documented in `docs/safe-aggregation-operators.md` and
+`docs/safe-dimension-operators.md`.
+"""
 listops() = sort!(collect(keys(SafeOps)))
+
+"""
+    clearcaches!() -> nothing
+
+Drop every memoized compilation the package holds: parsed specs
+(`SafeSpecCache`), lifted aggregators (`DataFrameAggrCache`) and window
+kernels (`WindowKernelCache`).
+
+Call this after **re-registering an existing operator name**. Parsed specs are
+cached by source string and hold a closure over the operator as it was at
+first parse, so replacing an operator otherwise leaves already-parsed specs —
+including specs re-parsed from identical text — running the old function:
+
+```julia
+registerop!(:myop, v1; shape = :reduce)
+parseaggr("myop(_)").f(x)     # v1
+
+registerop!(:myop, v2; shape = :reduce)
+parseaggr("myop(_)").f(x)     # still v1
+clearcaches!()
+parseaggr("myop(_)").f(x)     # v2
+```
+
+Registering a **new** name needs no clearing, so a host package that registers
+once at load time never has to call this; it is the REPL, test-file and
+plugin-reload path. Everything dropped is a pure memo — the next parse or
+apply recomputes it, at the cost of that one recompilation.
+
+See `docs/extending-the-grammar.md`.
+"""
+function clearcaches!()
+    # runtime-only forward references: SafeSpecCache (safe.jl) and
+    # WindowKernelCache (dimension.jl) are defined in later includes, which is
+    # fine inside a function body -- resolved at call time, whole module loaded.
+    empty!(SafeSpecCache)
+    empty!(DataFrameAggrCache)
+    empty!(WindowKernelCache)
+    nothing
+end
 
 # broadcasting wrapper: kwargs are forwarded to each elementwise application
 bcast(f) = (args...; kwargs...) -> Base.broadcast((a...) -> f(a...; kwargs...), args...)
@@ -104,7 +208,7 @@ bcast(f) = (args...; kwargs...) -> Base.broadcast((a...) -> f(a...; kwargs...), 
 for f in (sum, prod, mean, median, std, var, quantile, minimum, maximum, extrema,
           length, count, first, last, any, all,
           uniqvalue, countuniq, unionall, strjoinuniq, wmeanfallback,
-          isuniform)
+          isuniform, hhi)
     _register!(Symbol(f), f, :reduce)
 end
 
@@ -200,6 +304,30 @@ const DefaultSafeOps = sort!(collect(keys(SafeOps)))
 # reject an additional groupby modifier.
 const ClassifierVerbs = Dict{Symbol,Int}()
 
+"""
+    registerclassifier!(name::Symbol, argpos::Integer) -> nothing
+
+Declare that the already-registered verb `name` is a **classifier**: a
+pivot-kind dimension verb whose grouping column is *data in the spec itself*,
+carried by positional argument `argpos`.
+
+`topnames(District, TestScr, 5)` is the shipped example — argument 1 is the
+label source — hence `registerclassifier!(:topnames, 1)`. Registering makes
+kind inference and the grouping fix-up automatic for both trusted-`Expr` and
+untrusted-string specs; such verbs then reject an additional `groupby`
+modifier, since their grouping is already given.
+
+**Most pivot verbs need no registration.** The universal
+`spec |> groupby(keys...)` modifier makes any verb pivot-kind with the user's
+own keys, which is what keeps host extension registration-free. Register a
+classifier *only* when the grouping column doubles as verb data.
+
+A classifier returns one label per group. To get the ordering shipped
+classifiers have, give labels a fixed-width rank prefix (`" 1. "`, `"10. "`)
+so lexical order is the intended order, and return a `CategoricalArray` —
+`PivotDim` keeps labels categorical across context partitions only when the
+verb's own output already was. See `docs/extending-the-grammar.md`.
+"""
 function registerclassifier!(name::Symbol, argpos::Integer)
     ClassifierVerbs[name] = Int(argpos)
     nothing

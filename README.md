@@ -122,7 +122,7 @@ dim(df, [:big => dim"where(sales > 12)"])
 
 Notice what the classifying verbs emit: not codes, but **presentation-ready
 labels** — `"1. W"`, `"2. [25%, 50%)"`, `"3. 1 ≤ x < 2"`, an `"Others"`
-bucket for the unranked tail. The zero-padded rank prefix is deliberate: it
+bucket for the unranked tail. The fixed-width rank prefix is deliberate: it
 makes *lexical* order the intended order, so the labels sort correctly as
 `CategoricalArray` levels, in a group-by, and in a rendered table, with no
 custom comparator anywhere. A dimension is meant to be looked at as well as
@@ -146,6 +146,19 @@ the Pareto idiom:
 dim(df, [:cum => dim"cumsum(sales) |> groupby(region) |> orderby(sales => :desc)"])
 ```
 
+> **Coming from SQL window functions?** `OVER (PARTITION BY region ORDER BY
+> date)` does **not** translate to `|> groupby(region) |> orderby(date)` — that
+> form *runs*, but computes something else (it aggregates sales per region
+> first, then cumsums over the region totals). The window partition is the
+> **chain's left context**:
+>
+> ```julia
+> dim(df, [:region, :cum => dim"cumsum(sales) |> orderby(date)"])   # per-region running total
+> ```
+>
+> `|> partitionby(...)`, `|> over(...)` and `|> within(...)` are rejected with
+> this pointer, precisely so nobody "corrects" them to `groupby`.
+
 Modifier textual order carries no meaning (`groupby |> orderby` ≡
 `orderby |> groupby` — they are options, like keyword arguments; see
 [design/compound-modifiers.md](design/compound-modifiers.md) for why that
@@ -168,6 +181,12 @@ files, where `\circ`-tab completion doesn't exist and a Unicode glyph is a real
 barrier — so the ASCII `|>` is accepted everywhere with identical meaning.
 Whichever you type, read it as "…with this engine option", not "pipe the data
 into `orderby`".
+
+One caveat both glyphs share: they parse with Julia's precedence — `∘` binds
+as tightly as `*`, and `|>` tighter than a comparison — so when a spec's top
+level is arithmetic or a comparison, parenthesize it before attaching the
+modifier: `(sales - lag(sales)) |> orderby(date)`. The unparenthesized form is
+caught at parse time with the same advice.
 
 ### Chains: dimensions become pivot keys
 
@@ -501,6 +520,8 @@ what that buys:
 |---|---|
 | `maen(_)` | did you mean `mean`? — OSA repair, so transpositions are one edit |
 | `avg(_)`, `nunique(x)`, `nullif(a, b)` | not registered here — use `mean(x)` / `countuniq(x)` / `onlyif(a != b, a)`. The spellings people arrive with from SQL, dplyr, pandas and Excel are redirected by name; they are **not** aliases, the spec still fails |
+| `count(*)` | SQL's `count(*)` is the group's row count, spelled `nrow` — a bare `*` is never a column |
+| `cumsum(x) \|> partitionby(region)` | a window partition is the chain's **left context**, not a modifier — and pointedly *not* `groupby`, which aggregates-then-classifies |
 | `(a > 1) & (b < 2)` | combine conditions with `&&` (and why: it binds looser than the comparisons) |
 | `cumsum(:qty)` | `:qty` is a Symbol literal, only an option *value* here — a column is a bare word, without the colon |
 | `topnames()` | takes 3 positional arguments, got 0 — arity is checked against the verb's own method table at **parse** time, rather than becoming a `MethodError` inside a group-by |
@@ -574,6 +595,10 @@ registerop!(:tophalf, (name, measure) -> ...)
 registerclassifier!(:tophalf, 1)               # dim"tophalf(District, TestScr)"
 ```
 
+The full recipe — shape, broadcasting, degenerate inputs, classifier labels,
+and the re-registration trap — is in
+**[docs/extending-the-grammar.md](docs/extending-the-grammar.md)**.
+
 #### Declaring an operator's shape
 
 `shape` tells the parser how many values an operator returns *relative to its
@@ -616,7 +641,11 @@ the two operator documents, which a test keeps in sync with the registry:
   (`rank`, `denserank`, `ordinalrank`, `tiedrank`), the modifiers.
 - [docs/safe-aggregation-operators.md](docs/safe-aggregation-operators.md) —
   reductions, `uniqvalue` / `countuniq` / `strjoinuniq` / `unionall`,
-  `wmeanfallback`, and the rules for composite aggregation.
+  `wmeanfallback`, `hhi` (Herfindahl–Hirschman concentration), and the rules
+  for composite aggregation.
+- [docs/extending-the-grammar.md](docs/extending-the-grammar.md) — for **host
+  developers**: writing your own safe operators with `registerop!` /
+  `registerclassifier!`, end to end.
 
 `listops()` prints the live registry, including anything a host has added
 with `registerop!`.

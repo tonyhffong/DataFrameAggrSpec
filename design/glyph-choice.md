@@ -92,3 +92,17 @@ method-chaining misreading that the modifier semantics explicitly reject.
 
 Status: no code change. This note records the analysis so the "just use a
 dot, it's easier to type" proposal is not revisited without rereading it.
+
+## Postscript (2026-07): the precedence caveat
+
+Both glyphs parse with Julia's precedence, and the two differ: `∘` binds as
+tightly as `*`, while `|>` sits between comparisons and `+`. So the README's
+"identical meaning" claim holds only when the spec's top level binds tighter
+than the glyph — on a top-level `+`/`-` or comparison, the modifier silently
+attaches to the nearest operand (`sales - lag(sales) ∘ orderby(date)` reads as
+`sales - (lag(sales) ∘ orderby(date))`). The compiler catches the resulting
+nested modifier and answers with the fix ("wrap the spec in parentheses and
+keep the modifier last"); the README documents the caveat beside the two-glyph
+rationale. Found in the 2026-07 adoption review
+([adoption-review.md](adoption-review.md), finding 2); a day-over-day diff
+with ordering is exactly the spec that hits it.

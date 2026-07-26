@@ -399,8 +399,11 @@ function pivot_values(df::AbstractDataFrame, d::PivotDim, hints::AggrHints)
             out[ctxidxs[i]] = labels[pos[g]]
         end
     end
-    # re-wrap as categorical: verb labels carry zero-padded rank prefixes, so the
-    # default lexical level order is the intended one even across context partitions
+    # re-wrap as categorical: verb labels carry fixed-width (space-padded) rank
+    # prefixes, so the default lexical level order is the intended one even
+    # across context partitions. Only when the VERB's own output was already
+    # categorical -- a host verb returning plain Strings keeps a plain column
+    # (the classifier label contract, docs/extending-the-grammar.md)
     anycat ? categorical(identity.(out)) : identity.(out)
 end
 

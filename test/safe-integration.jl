@@ -85,6 +85,30 @@ import DataFrameAggrSpec: WindowDim, PivotDim, dependencies   # internals, white
     # C2 [d4=40, d5=10] (median 25)
     hf = dim(df, [:County, :half => dim"tophalf(District, TestScr)"])
     @test hf.half == ["bottom", "bottom", "top", "bottom", "top", "bottom"]
+    # clearcaches!: re-registering an existing name leaves already-parsed specs
+    # holding a closure over the OLD function -- specs are cached by source
+    # string, and the agg path holds a second cached layer beyond the spec.
+    # This is the REPL/test-file path for host operator development.
+    registerop!(:ver, x -> "v1"; shape = :reduce)
+    @test parseaggr("ver(_)").f([1, 2]) == "v1"
+    registerop!(:ver, x -> "v2"; shape = :reduce)
+    @test parseaggr("ver(_)").f([1, 2]) == "v1"      # stale, by construction
+    @test clearcaches!() === nothing
+    @test parseaggr("ver(_)").f([1, 2]) == "v2"
+    # ... and it clears the aggregator layer too, which SafeSpecCache alone does not
+    vdf = DataFrame(g = ["a", "a"], v = [1.0, 2.0])
+    registerop!(:va, x -> "a1"; shape = :reduce)
+    @test agg(vdf, [:g]; hints = AggrHints(:v => aggr"va(_)")).v == ["a1"]
+    registerop!(:va, x -> "a2"; shape = :reduce)
+    empty!(DataFrameAggrSpec.SafeSpecCache)          # the parsed-spec memo only
+    @test agg(vdf, [:g]; hints = AggrHints(:v => aggr"va(_)")).v == ["a1"]
+    clearcaches!()
+    @test agg(vdf, [:g]; hints = AggrHints(:v => aggr"va(_)")).v == ["a2"]
+    # dropping pure memos must not change any answer for unaffected specs
+    before = dim(df, [:County, :cum => dim"cumsum(TestScr)"]).cum
+    clearcaches!()
+    @test dim(df, [:County, :cum => dim"cumsum(TestScr)"]).cum == before
+
     registerop!(:Weights, StatsBase.Weights)
     wm = parseaggr("mean(_, Weights(EnrlTot))")
     g = liftAggrSpecToFunc(:TestScr, wm)

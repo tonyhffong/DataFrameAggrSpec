@@ -220,6 +220,58 @@ end
     @test out.v[2] ≈ (1 * 10.0 + 3 * 20.0) / (1 + 3)   # group b: Size usable
 end
 
+@testset "hhi" begin
+    # verb semantics: the sum of squared shares, denominator computed here
+    @test hhi([50.0, 30.0, 20.0]) ≈ 0.38          # .5^2 + .3^2 + .2^2
+    @test hhi([25, 25, 25, 25]) ≈ 0.25            # n equal participants -> 1/n
+    @test hhi([100.0]) ≈ 1.0                      # a monopolist
+    @test hhi([1, 1, 1, 1]) ≈ hhi([7, 7, 7, 7])   # scale-free: sizes, not shares
+    @test hhi([0.5, 0.3, 0.2]) ≈ 0.38             # ... so pre-normalized is fine too
+    @test hhi([50.0, 30.0, 20.0], scale = 10000) ≈ 3800.0   # antitrust points
+
+    # a degenerate group yields `missing`, NEVER a number -- the whole reason
+    # the verb exists beside the expressible sum((_/sum(_))^2), which answers
+    # 0.0 / NaN / 5.0 to these three
+    @test ismissing(hhi(Float64[]))               # empty: not "perfect competition"
+    @test ismissing(hhi([0.0, 0.0]))              # zero total: not NaN
+    @test ismissing(hhi([-50.0, 100.0]))          # a negative share is not a share
+    @test ismissing(hhi([missing, missing]))      # nothing known
+
+    # skipna mirrors countuniq/uniqvalue: default drops and renormalizes over
+    # the known values, `false` is the strict reading (unknown size => unknown
+    # index)
+    @test hhi([50.0, 30.0, 20.0, missing]) ≈ 0.38
+    @test ismissing(hhi([50.0, 30.0, 20.0, missing], skipna = false))
+    @test hhi([1, 2], skipna = false) ≈ hhi([1, 2])   # no missings: same answer
+
+    # through the untrusted DSL
+    @test aggr"hhi(_)".f([50.0, 30.0, 20.0]) ≈ 0.38
+    @test aggr"hhi(_, scale = 10000)".f([50.0, 30.0, 20.0]) ≈ 3800.0
+    @test aggr"hhi".f([50.0, 30.0, 20.0]) ≈ 0.38     # bare name ≡ hhi(_)
+    @test parseaggr("hhi(_)") isa SafeAggrSpec
+    # it REDUCES, so it is a legal aggregation and an illegal groupby dim
+    @test opshape(:hhi) == :reduce
+    @test_throws SpecError parsedim("hhi(sales) |> groupby(store)")
+
+    # the two-stage form the docs call the usual one: rows are transactions,
+    # concentration is across STORES
+    df = DataFrame(
+        region = ["E", "E", "E", "W", "W", "W", "W"],
+        store  = ["a", "a", "b", "c", "c", "d", "e"],
+        sales  = [30.0, 20.0, 50.0, 40.0, 20.0, 20.0, 20.0],
+    )
+    out = agg(df, [:region]; cols = [:sales => aggr"hhi(sum(_) |> groupby(store))"])
+    @test out.sales[1] ≈ 0.5      # E: stores a = 50, b = 50 -> .5^2 + .5^2
+    @test out.sales[2] ≈ 0.44     # W: c = 60, d = 20, e = 20 -> .6^2+.2^2+.2^2
+    # ... and the row-level spelling answers the OTHER question, deliberately
+    rows = agg(df, [:region]; cols = [:sales => aggr"hhi(_)"])
+    @test rows.sales[1] ≈ (0.3^2 + 0.2^2 + 0.5^2)
+
+    # guarding on it reads naturally (the docs' example)
+    @test ismissing(onlyif(hhi([1.0, 1.0]) > 0.9, 42))
+    @test onlyif(hhi([1.0]) > 0.9, 42) == 42
+end
+
 @testset "strjoinuniq" begin
     # verb semantics: unique, non-missing, stringified, sorted, joined, capped
     @test strjoinuniq(["b", "a", "b", missing]) == "a,b"

@@ -17,6 +17,21 @@ end
 # below exist in the untrusted language.
 function compile_node(ex, cols::Vector{Symbol})
     if isa(ex, Symbol)                       # bare identifier = column (incl. _)
+        # ... but only identifier-SHAPED symbols can be columns. A bare
+        # operator symbol in argument position parses (Julia reads `count(*)`
+        # as the function `*`), would compile to a column named '*', and die
+        # at apply time in a DataFrames lookup naming neither the spec nor the
+        # habit. `*` gets its own rung: SQL's count(*) is the commonest
+        # aggregation spelling in existence, and the local answer is `nrow`.
+        if !isidenttoken(string(ex))
+            ex === :* && specerror("'*' is not a column here -- SQL's " *
+                      "count(*) is the group's row count, spelled 'nrow' " *
+                      "(aggr\"nrow\"); a specific column is counted as " *
+                      "count(col)"; code = :foreign_spelling, token = ex)
+            specerror("'" * string(ex) * "' is an operator, not a column -- " *
+                      "a column reference is a bare word, e.g. sales";
+                      code = :unsupported_syntax, token = ex)
+        end
         i = colindex!(cols, ex)
         return vals -> vals[i]
     elseif isa(ex, QuoteNode)                # :sym literal
@@ -143,6 +158,13 @@ end
 function compile_grouped(ex::Expr, cols::Vector{Symbol})
     combinator, lhs, rhs = ex.args[1], ex.args[2], ex.args[3]
     if ismodifiershape(lhs)
+        # `... |> groupby(y) |> orderby(d)` nested: the orderby is the
+        # mistake, not the modifier count -- subgroup order IS the key sort
+        if ismodifiercall(rhs) && rhs.args[1] == :orderby
+            specerror("orderby cannot attach to a nested grouped " *
+                      "reduction -- subgroups are ordered by their groupby " *
+                      "keys"; code = :modifier_misuse, token = :orderby)
+        end
         error("one modifier only in a nested grouped reduction -- " *
               "multi-key grouping is groupby(k1, k2, ...)")
     end
@@ -158,6 +180,16 @@ function compile_grouped(ex::Expr, cols::Vector{Symbol})
         end
         tok = Base.Meta.isexpr(rhs, :call) && isa(rhs.args[1], Symbol) ?
               rhs.args[1] : isa(rhs, Symbol) ? rhs : nothing
+        # nested position: PARTITION BY vocabulary maps to the composite
+        # groupby (evaluate the inner spec once per key), unlike the
+        # top-level case in peel_modifiers where it maps to the chain
+        if tok !== nothing && in(squash(tok), ForeignPartitionWords)
+            specerror("'" * string(tok) * "' -- per-key evaluation inside " *
+                      "a spec is spelled groupby: \"mean(sum(_) " *
+                      string(combinator) * " groupby(year))\" runs the " *
+                      "inner spec once per key combination";
+                      code = :foreign_spelling, token = tok)
+        end
         r = tok === nothing ? (hint = "", fix = nothing) : repair(tok, SafeModifiers)
         specerror("'" * string(combinator) * "' attaches a groupby " *
                   "modifier to a nested spec (\"mean(sum(_) " *
@@ -166,8 +198,22 @@ function compile_grouped(ex::Expr, cols::Vector{Symbol})
                   code = :modifier_misuse, token = tok, fix = r.fix)
     end
     if rhs.args[1] == :orderby
-        specerror("orderby cannot attach to a nested grouped " *
-                  "reduction -- subgroups are ordered by their groupby keys";
+        # A nested `X |> orderby(...)` with no groupby in sight is one of two
+        # mistakes this site cannot tell apart, so the message names both:
+        # (a) the PRECEDENCE trap -- `∘` binds as tightly as `*` and `|>`
+        # tighter than a comparison, so in "a - b ∘ orderby(c)" the modifier
+        # attached to `b` alone though the user wrote the README's advertised
+        # top-level shape; (b) trying to order a nested reduction stage,
+        # which is grouped (its subgroups sort by key), never ordered. The
+        # old message covered only (b) and answered a groupby question the
+        # precedence-trap user never asked.
+        specerror("orderby attached to a nested spec. If it was meant for " *
+                  "the WHOLE spec, wrap the spec in parentheses and keep " *
+                  "the modifier last (\"(a - lag(a)) |> orderby(date)\") -- " *
+                  "'∘' binds as tightly as '*' and '|>' tighter than a " *
+                  "comparison. A nested reduction stage is grouped, not " *
+                  "ordered -- \"mean(sum(_) |> groupby(year))\" -- and its " *
+                  "subgroups are ordered by their groupby keys";
                   code = :modifier_misuse, token = :orderby)
     end
     it = compile_node(lhs, cols)   # inner first: cols in source order
