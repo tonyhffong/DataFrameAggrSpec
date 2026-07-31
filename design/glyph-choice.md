@@ -106,3 +106,91 @@ keep the modifier last"); the README documents the caveat beside the two-glyph
 rationale. Found in the 2026-07 adoption review
 ([adoption-review.md](adoption-review.md), finding 2); a day-over-day diff
 with ordering is exactly the spec that hits it.
+
+## Addendum (2026-07): what about `=>`? Its precedence is lower
+
+*Question posed: "what about `=>`? Its precedence is even lower so it forces
+fewer parentheses."*
+
+The premise is correct, and this is the one candidate separator that beats the
+shipped pair on a real axis. `=>` is precedence 2 — below everything except
+assignment — so the postscript's caveat vanishes entirely. Measured against
+Julia's parser (2026-07; `∘` = 12, `+` = 11, `|>` = 9, comparison = 7,
+`=>` = 2):
+
+| Spec text | Parses as |
+|---|---|
+| `sales - lag(sales) ∘ orderby(date)` | `sales - (lag(sales) ∘ orderby(date))` ✗ |
+| `sales - lag(sales) \|> orderby(date)` | `(sales - lag(sales)) \|> orderby(date)` ✓ |
+| `sum(_) > 100 \|> orderby(date)` | `sum(_) > (100 \|> orderby(date))` ✗ |
+| `sales - lag(sales) => orderby(date)` | `(sales - lag(sales)) => orderby(date)` ✓ |
+| `sum(_) > 100 => orderby(date)` | `(sum(_) > 100) => orderby(date)` ✓ |
+
+(Note the postscript's rule refines per glyph: `∘` loses on `+`/`-` *and*
+comparisons, `|>` only on comparisons — but a bare condition is a legal spec
+since 0.8.2, so both glyphs have a live failing case. `=>` has none.)
+
+Three objections, in increasing weight.
+
+**1. Right-associativity gives compounds a different AST shape.**
+`spec => orderby(a) => groupby(g)` parses as
+`spec => (orderby(a) => groupby(g))`: the modifiers nest to the RIGHT and the
+spec is a leaf of the outermost pair. `∘` and `|>` are both left-associative
+and nest to the LEFT, which is why `peel_modifiers` is one loop that strips
+the outer node and descends into `args[2]`. `=>` would need a second traversal.
+More to the point, `compound-modifiers.md`'s invariant is that `∘` and `|>`
+read compounds in opposite *narrative* directions while producing the **same**
+AST — that identity is what makes the textual order safely non-semantic. `=>`
+would be the first spelling to break it structurally, and mixing spellings
+multiplies the pairings from two to six (`spec => orderby(a) |> groupby(g)`
+parses as `spec => (orderby(a) |> groupby(g))`, i.e. a modifier applied to a
+modifier, which the peeler rejects with "the modifier must follow the spec").
+
+**2. `=>` already means something here — at two adjacent layers, with the
+spec on the opposite side.** A chain entry is `:streak => spec` and a named
+measure is `col => spec => outname`; an order entry *inside the modifier* is
+`orderby(date => :desc)`. Fully spelled out, the separator proposal reads:
+
+```julia
+dim(df, :streak => "cumsum(f) => orderby(date => :desc)")
+#              ^ name↦spec        ^ separator      ^ col↦direction
+```
+
+Three meanings of one glyph, nested inside each other. This is the "most
+overloaded character" objection that sank `.`, but worse: `.`'s competing
+meanings were lexical (decimal literals, dotted operators), while `=>`'s are
+structural at the very layer being parsed. And the collision inverts the
+reader's expectation — everywhere else in this API the thing to the LEFT of
+`=>` is the name and the spec is on the right; here the spec would be on the
+left.
+
+**3. The governing law: `|>` exists to clear a barrier, and `=>` clears
+none.** `expressiveness.md`'s naming law is *no aliases*. Two separator
+spellings are already an exception, admitted for exactly one reason: `∘` is
+the truthful glyph but cannot be typed into a TUI text field, so ASCII needs a
+twin. `|>` collects that. `=>` is also ASCII and also two characters — it
+buys no capability, only parentheses. What it would cost is permanent grammar
+surface: a third spelling in every doc, rejection message, `SafeModifiers`
+test and completion list, plus the second peel shape from objection 1. Set
+against that, the thing being bought off is one parenthesis pair on the
+minority of specs whose top level is a comparison (or, under `∘`, an
+additive) — a case the compiler *already* catches and answers with a drop-in
+fix. Trading a standing grammar cost for a diagnosed one-off is the wrong
+direction.
+
+**Design implication.** Keep `∘`/`|>`. Do not add `=>` as a third separator,
+and do not swap it for `|>` (that would be breaking, and objections 1–2 apply
+either way). Prefer `|>` in documentation for specs with an additive or
+comparison top level, since it is the glyph that survives `-`.
+
+**One actionable gap found while probing this.** Today
+`dim"cumsum(sales) => orderby(date)"` is rejected as
+*"unknown function '=>' — did you mean '=='?"*. The OSA repair fires because
+`=>` and `==` are one edit apart, and it is exactly wrong: nobody typing `=>`
+before `orderby(` meant equality. Per G1 the message should redirect to the
+separator (`=>` in modifier position → "the modifier separator is `|>` or
+`∘`"), which is the same shape as the `&`/`|` → `&&`/`||` rung already at the
+top of `unknown_op_error`'s ladder. Not fixed here.
+
+Status: no code change. Recorded so the "`=>` binds looser, use that" proposal
+is not revisited without rereading it.

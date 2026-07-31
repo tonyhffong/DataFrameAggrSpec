@@ -36,7 +36,7 @@ equivalent are "bare identifier = column", operators broadcasting over
 vectors without dots, and `_` as the aggregation target.
 
 **Implication:** do not treat the whitelist-interpreter design as novel or
-precious — it is the standard solution. The novelty budget belongs to the
+precious — it is the standard solution. The novelty belongs to the
 grammar over columns, not to the sandbox.
 
 ## 2. Aggregation specs as runtime data — the strongest structural matches

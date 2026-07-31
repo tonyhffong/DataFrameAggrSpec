@@ -1,10 +1,8 @@
 # DataFrameAggrSpec.jl
 
-DataFrameAggrSpec specializes in only two things: creating dimensions and creating aggregations (often based on those new
-dimensions) from DataFrames. Its design focuses on composability, both internally within this package
-(you will get a lot of mileage just using it) and with other packages. Furthermore, it has a "safe" parser to handle instructions
-from untrusted input (e.g. TUI/GUI text input), so package developers with user interface in mind can leverage the
-DSL defined here safely.
+DataFrameAggrSpec does two things: it derives new dimensions from a DataFrame, and it aggregates
+over them. Both compose — within the package, and with other packages. A "safe" parser accepts
+specs from untrusted text, so a package with a text field can wire this DSL straight to it.
 
 ## Contents
 
@@ -26,40 +24,33 @@ DSL defined here safely.
 
 ## Introduction
 
-A UI-free **runtime** DSL for DataFrame *aggregation* and *dimensioning*. Other packages using it can
-register new operators for their own use.
+A UI-free **runtime** DSL for DataFrame *aggregation* and *dimensioning*. A host package can
+register operators of its own.
 
-Specifications — supplied as `Symbol`s, `String`s, `Expr`s, spec objects, or
-lambdas at runtime — are compiled into functions over a `DataFrame`. Unlike
-[DataFramesMeta.jl](https://github.com/JuliaData/DataFramesMeta.jl), whose macros
-run at compile time, these specs can arrive from a GUI, a config file, or a
-database and be turned into working transforms on the fly. The motivation 
-is coming from data analytics.
-When developing an intuition about a dataset, a user constantly needs to adjust and apply
-different aggregation and pivoting (via static or on-the-fly dimensions) operations. For example, one may
-ask:
-- What are the "top" categories given a measure? e.g. top scoring schools in a state.
-- Which stores have the highest profit margin, this year, this quarter? If I break down by region what is
-the answer? If I break down by municipality what is the answer?
-- What if I change the definition of "profit margin"?
+Specs — `Symbol`s, `String`s, `Expr`s, spec objects or lambdas — compile at runtime into functions
+over a `DataFrame`. [DataFramesMeta.jl](https://github.com/JuliaData/DataFramesMeta.jl)'s macros run
+at compile time; these arrive from a GUI, a config file or a database and become working transforms
+on the fly. The need comes from analytics. Building an intuition about a dataset means asking one
+question, then the next:
+- Which are the top categories by some measure — the top-scoring schools in a state?
+- Which stores had the best profit margin this year? This quarter? Broken down by region? By
+municipality?
+- What if I redefine "profit margin"?
 
-We want to easily change our queries without rewiring many lines of code, 
-scattered across some distances when written in typical query languages.
+Each is a small change to the question. In a typical query language it is a large change to the code,
+scattered over many lines. Hence the design rule: **a small change to the analysis should be a
+small, local and expressive change to the code.**
 
-The core design philosophy is thus "changing one small step in an analysis should only change 
-the code in a small, local and expressive way".
+Two kinds of operator, and one rule that composes them:
 
-At the core of this package there are two operator pillars, one composition rule:
-
-- **Dimensioning** — operators that add NEW columns (existing data is never modified) whose
-  values are computed from *sibling rows*: rows sharing the same partition-key
-  values (`dim"..."` specs, chains, `dim`).
-- **Aggregation** — operators that reduce a group of rows to one value per column
-  (`aggr"..."` specs, `AggrHints`, `agg`).
-- **Composition** — *chains* declare dimensions inline in a pivot list,
-  partitioned by their **left context**; a declared dimension is immediately a
-  pivot key for what follows. The same chain drives both verbs: `dim(df, chain)`
-  ADDS its columns, `agg(df, chain)` groups by them and reduces.
+- **Dimensioning** — adds NEW columns, never touching existing data. Each row's value comes from
+  its *sibling rows*: those sharing its partition keys (`dim"..."`, chains, `dim`).
+- **Aggregation** — reduces a group of rows to one value per column
+  (`aggr"..."`, `AggrHints`, `agg`).
+- **Composition** — a *chain* is a pivot list declaring dimensions inline, each
+  partitioned by its **left context** and at once a pivot key for what follows.
+  One chain drives both verbs: `dim(df, chain)` ADDS its columns,
+  `agg(df, chain)` groups by them and reduces.
 
 <p align="center">
   <img src="docs/assets/dim-vs-agg.svg" width="680"
@@ -68,21 +59,18 @@ At the core of this package there are two operator pillars, one composition rule
 
 ## Dimensioning
 
-Dimensioning **adds new columns** to a DataFrame. What makes a *dimension*
-different from an ordinary computed column is where its values come from: each
-row's value is computed from its **sibling rows** — the rows that share the
-same grouping-key values. Your existing data is never modified, only new
-columns appear. Group totals, shares of a group, running sums, "top 5" labels,
-quantile buckets — these are all dimensions.
+Dimensioning **adds new columns** to a DataFrame. A dimension differs from an ordinary computed
+column in where its values come from: each row's value is computed from its **sibling rows**, those
+sharing its grouping keys. Nothing already there is modified. Group totals, shares of a group,
+running sums, "top 5" labels and quantile buckets are all dimensions.
 
-**Motivation**: dimensions are natural pivot keys to look at a dataset. An easy way to define new
-dimensions lets users see the same dataset with a new lens quickly. Furthermore, dimensions also
-allow users to get answers *locally* from a specific segmentation (a bunch of rows sharing the same
-attributes).
+**Why they matter**: a dimension is a natural pivot key, so defining one cheaply is how a user views
+the same data through a new lens. It also answers *locally*, within a single segment — one set of
+rows sharing an attribute.
 
-Dimension specifications are written as strings in a small spreadsheet-flavored grammar
-(`dim"..."`): bare identifiers are columns, and only whitelisted operations are
-allowed, so these strings are safe to accept from an end user's text field.
+Dimension specs are strings in a small spreadsheet-flavored grammar (`dim"..."`): bare identifiers
+are columns, and only whitelisted operations exist, so a string is safe to take from an end user's
+text field.
 
 ```julia
 using DataFrameAggrSpec, DataFrames
@@ -118,24 +106,21 @@ dim(df, [:rq => dim"quantiles(sales, [.5]) |> groupby(region)"])
 dim(df, [:big => dim"where(sales > 12)"])
 ```
 
-Notice what the classifying verbs emit: not codes, but **presentation-ready
-labels** — `"1. W"`, `"2. [25%, 50%)"`, `"3. 1 ≤ x < 2"`, an `"Others"`
+Notice what the classifying verbs emit: not codes but **presentation-ready
+labels** — `"1. W"`, `"2. [25%, 50%)"`, `"3. 1 ≤ x < 2"`, and an `"Others"`
 bucket for the unranked tail. The fixed-width rank prefix is deliberate: it
-makes *lexical* order the intended order, so the labels sort correctly as
-`CategoricalArray` levels, in a group-by, and in a rendered table, with no
-custom comparator anywhere. A dimension is meant to be looked at as well as
-grouped by.
+makes *lexical* order the intended order, so labels sort correctly as
+`CategoricalArray` levels, in a group-by and in a rendered table, with no
+custom comparator. A dimension is meant to be looked at, not only grouped by.
 
-`dim` returns a new frame (the input is untouched); `dim!` adds the columns in
-place. Two postfix **modifiers** attach engine options to an intention spec 
-(our design favors putting intent first, modifier after).
-Here `spec |> orderby(cols...)` sorts the partition before
-an order-sensitive operator runs (`orderby(date => :desc)` for direction), and
-`spec |> groupby(keys...)` aggregates the measure at that `keys...` granularity *first*
-for all the rows that belong to the same keys
-so the verb classifies all these rows in one go — the table is never reduced;
+`dim` returns a new frame; `dim!` adds the columns in place. Two postfix
+**modifiers** attach engine options after the spec — intent first, options
+after. `spec |> orderby(cols...)` sorts the partition before an
+order-sensitive operator runs (`orderby(date => :desc)` for direction).
+`spec |> groupby(keys...)` aggregates the measure to that granularity *first*,
+so the verb classifies whole groups at once; the table is never reduced, and
 each group's label lands on all its member rows. When both appear, `orderby`
-sorts the *groups* (by keys or their aggregates) before the verb runs —
+sorts the *groups*, by keys or by their aggregates, before the verb runs —
 the Pareto idiom:
 
 ```julia
@@ -145,55 +130,51 @@ dim(df, [:cum => dim"cumsum(sales) |> groupby(region) |> orderby(sales => :desc)
 ```
 
 > **Coming from SQL window functions?** `OVER (PARTITION BY region ORDER BY
-> date)` does **not** translate to `|> groupby(region) |> orderby(date)` — that
-> form *runs*, but computes something else (it aggregates sales per region
-> first, then cumsums over the region totals). The window partition is the
-> **chain's left context**:
+> date)` is **not** `|> groupby(region) |> orderby(date)`. That form *runs*,
+> and computes something else: it sums sales per region, then cumsums the
+> region totals. The window partition is the **chain's left context**:
 >
 > ```julia
 > dim(df, [:region, :cum => dim"cumsum(sales) |> orderby(date)"])   # per-region running total
 > ```
 >
 > `|> partitionby(...)`, `|> over(...)` and `|> within(...)` are rejected with
-> this pointer, precisely so nobody "corrects" them to `groupby`.
+> this pointer, so that nobody "corrects" them to `groupby`.
 
-Modifier textual order carries no meaning (`groupby |> orderby` ≡
-`orderby |> groupby` — they are options, like keyword arguments; see
-[design/compound-modifiers.md](design/compound-modifiers.md) for why that
-has to be true). The available operations are
+Modifier order carries no meaning: `groupby |> orderby` ≡ `orderby |> groupby`.
+They are options, like keyword arguments —
+[design/compound-modifiers.md](design/compound-modifiers.md) explains why that
+has to be true. The available operations are
 listed in [docs/safe-dimension-operators.md](docs/safe-dimension-operators.md).
 
-`groupby`'s keys may be **computed**, not just bare columns —
-`dim"cumsum(sales) |> groupby(yyyymm(date))"` buckets by calendar month
-instead of an existing column, mixable with plain columns
-(`groupby(region, yyyymm(date))`); the `[col, ...]` array spelling stays
-plain-column-only.
+`groupby`'s keys may be **computed**, not just bare columns:
+`dim"cumsum(sales) |> groupby(yyyymm(date))"` buckets by calendar month, and
+mixes with plain columns (`groupby(region, yyyymm(date))`). The `[col, ...]`
+array spelling stays plain-column-only.
 
 **Why two spellings for the same separator?** `spec ∘ orderby(date)` and
-`spec |> orderby(date)` mean exactly the same thing, and the redundancy is
-deliberate. `∘` is the more truthful glyph: a modifier is not a pipeline stage
-the data flows through — nothing is ever called — it *composes* with the spec,
-the way `g ∘ f` builds a new function without running either. It is also the
-more succinct on screen. But these specs arrive from TUI text fields and config
-files, where `\circ`-tab completion doesn't exist and a Unicode glyph is a real
-barrier — so the ASCII `|>` is accepted everywhere with identical meaning.
-Whichever you type, read it as "…with this engine option", not "pipe the data
-into `orderby`".
+`spec |> orderby(date)` mean the same thing, and the redundancy is deliberate.
+`∘` is the truthful glyph: a modifier is not a pipeline stage the data flows
+through — nothing is ever called — it *composes* with the spec, as `g ∘ f`
+builds a new function without running either. It is also shorter on screen. But
+specs arrive from TUI text fields and config files, where `\circ`-tab
+completion does not exist and a Unicode glyph is a real barrier, so ASCII `|>`
+is accepted everywhere. Whichever you type, read it as "…with this engine
+option", not "pipe the data into `orderby`".
 
-One caveat both glyphs share: they parse with Julia's precedence — `∘` binds
-as tightly as `*`, and `|>` tighter than a comparison — so when a spec's top
-level is arithmetic or a comparison, parenthesize it before attaching the
-modifier: `(sales - lag(sales)) |> orderby(date)`. The unparenthesized form is
-caught at parse time with the same advice.
+Both glyphs share one caveat: they parse with Julia's precedence — `∘` binds
+as tightly as `*`, `|>` tighter than a comparison — so parenthesize a spec
+whose top level is arithmetic or a comparison before attaching the modifier:
+`(sales - lag(sales)) |> orderby(date)`. The unparenthesized form is caught at
+parse time with the same advice.
 
 ### Chains: dimensions become pivot keys
 
-The astute reader would have noticed that the `dim` always takes a vector in
-the second argument. The vector is a **chain** — an ordered pivot list. `Symbol`s
-name existing columns; `name => spec` declares a new dimension. The rule that
-makes chains compose: **a dimension's grouping is everything to its left in
-the chain** (its *left context*), and once declared, the dimension is
-immediately usable as a key by everything to its right:
+`dim`'s second argument is always a vector. That vector is a **chain** — an
+ordered pivot list. `Symbol`s name existing columns; `name => spec` declares a
+new dimension. One rule makes chains compose: **a dimension is grouped by
+everything to its left in the chain** (its *left context*), and once declared
+it is a key for everything to its right:
 
 ```julia
 chain = [:County, # existing column, County
@@ -212,24 +193,23 @@ out = agg(df, chain; hints)   # or: group by the chain, one row per key
        alt="each dimension in a chain is grouped by its left context and immediately becomes a pivot key for everything to its right">
 </p>
 
-In the above example, by removing the first element `:County` the result becomes a state level
-statistics. Intuitively, this makes sense. When we remove some of the "left context" the universe of rows
-for each key combo to the left are larger so we would be ranking from a larger pool.
+Drop the leading `:County` and the same chain ranks districts state-wide: with
+less left context, each key combination draws on a larger pool of rows.
 
-More generally, the dynamically generated dimension link is also **portable**. We can move a link up and down
-the chain, compose with other dimension links, and they will always obey the
-left context rule and act accordingly. Composition includes feeding one
-classifier's output to another: dimension labels are `CategoricalArray`s, and
-a classifier's name column accepts them (values are stringified as needed). If we want to discretize first and then find the top districts within each 
-quantiles, we just swap them. That's it.
+A dimension link is also **portable**. Move it up or down the chain, or compose
+it with others, and it obeys the left-context rule wherever it lands.
+Composition includes feeding one classifier's output to another: dimension
+labels are `CategoricalArray`s, and a classifier's name column accepts them,
+stringifying as needed. To discretize first and then rank districts within each
+quantile, swap the two entries. That's it.
 
 More chain forms:
 
 - **A chain declares pivot levels only** — every entry joins the left context
   and the key list. Side measures (shares, cumsums, z-scores) are deliberately
-  *not expressible inside a chain*: they would poison the grouping of
-  everything to their right. Compute them as **separate statements**, each
-  rebuilding its context explicitly:
+  *not expressible in a chain*: they would poison the grouping of
+  everything to their right. Write them as **separate statements**, each
+  rebuilding its context:
 
   ```julia
   df |> dim([:region, :share => dim"sales / sum(sales)"],
@@ -237,30 +217,29 @@ More chain forms:
            ) |> agg([:region, :bucket => dim"quantiles(sales, [.5])"]; hints)
   ```
 
-  The syntax forces the distinction: if it's in a chain, it's a key; if it's a
-  measure, it gets its own statement.
-- Pure runtime-string chains work for GUI/config paths:
+  The syntax forces the distinction: in a chain it is a key; in its own
+  statement it is a measure.
+- Chains of plain strings work for GUI and config paths:
   `["County", ["top5d", "topnames(District, TestScr, 5)"], "District"]`.
 
 ### The two dimension kinds
 
-Under the hood every dimension evaluates in one of
-two ways, deciding what a column reference binds to (picked by inference, or
-forced with `dimspec(...; kind = ...)`); the kinds are semantics, not types you
-construct:
+Every dimension evaluates in one of two ways, which decides what a column
+reference binds to. The kind is inferred, or forced with
+`dimspec(...; kind = ...)`; it is semantics, not a type you construct:
 
 - **window** — a column binds to the partition's row-level subvector (sorted by
-  `order` if given). The spec result is a scalar (broadcast to the partition)
+  `order` if given). The spec returns a scalar (broadcast to the partition)
   or a partition-length vector. Covers group totals, shares, z-scores,
   `cumsum`/`lag`/`lead`/`rank`. Bare specs default to this kind.
 - **pivot** — classifies *groups*: within each context partition, rows are
   grouped by the dimension's `by` keys, the referenced columns are aggregated
   per group (via `AggrHints`), the spec runs over those per-group vectors, and
-  each group's label is broadcast back to its member rows. This is the home of
+  each group's label is broadcast back to its member rows. Home of
   `topnames` / `quantiles` / `discretize`-over-group-sums. Classifier verbs infer
   this kind (see `registerclassifier!`); force it with `dimspec(...; kind = :pivot)`.
   An `order` (in-string `|> orderby(...)`) sorts the *groups* — by keys or
-  their aggregates — before the spec runs, for cumulative/Pareto shapes.
+  their aggregates — before the spec runs, for cumulative and Pareto shapes.
 
 <p align="center">
   <img src="docs/assets/window-vs-pivot.svg" width="700"
@@ -269,25 +248,24 @@ construct:
 
 `dimspec(ex; by = extra_grouping_keys, order = ..., kind = :window | :pivot)`
 is the full options carrier — the Julia-side equivalent of the in-string
-`|> orderby(...)` / `|> groupby(...)` modifiers (specifying the same option
-both ways is an error, not a precedence game). **The `by` rule**: `by` always
-means the grouping
-keys a dimension declares *itself*; a chain's left context layers on top — for
-a window dimension it is unioned into the partition, for a pivot dimension it
-becomes the outer context.
+`|> orderby(...)` / `|> groupby(...)` modifiers. Setting the same option both
+ways is an error, not a precedence game. **The `by` rule**: `by` is the
+grouping keys a dimension declares *itself*; a chain's left context layers on
+top — unioned into the partition for a window dimension, the outer context for
+a pivot one.
 
 `order` accepts `:col`, `:col => :asc/:desc`, vectors of those, and string
-forms (`":date => :desc"`). Results are scattered back through the inverse
+forms (`":date => :desc"`). Results scatter back through the inverse
 permutation, so output stays aligned with the original rows.
 
 (`agg` ≡ materialize the chain's declared dimensions, then group by the full key
-list and reduce — a pure-Symbol chain is just a plain group-by.)
+list and reduce — a pure-Symbol chain is a plain group-by.)
 
 ## Aggregation
 
-Aggregation **reduces a group of rows to one value per column**. The main entry
-point is `agg`, which groups by a chain (keys existing or derived) and reduces
-the remaining columns:
+Aggregation **reduces a group of rows to one value per column**. `agg` is the
+entry point: it groups by a chain — keys existing or derived — and reduces the
+remaining columns:
 
 ```julia
 hints = AggrHints(:TestScr => aggr"sum(_ * EnrlTot) / sum(EnrlTot)",
@@ -297,9 +275,8 @@ agg(df, [:County]; hints)            # one row per County, all other cols reduce
 agg(df, chain; hints)                # group by chain keys (existing OR computed)
 ```
 
-The reductions themselves use the same safe grammar (`aggr"..."`), with one
-addition: **`_` stands for the target column** — the column being aggregated —
-so one spec can be reused across many columns:
+The reductions use the same safe grammar (`aggr"..."`), with one addition:
+**`_` stands for the target column**, so one spec serves many columns:
 
 ```julia
 aggr"sum"                        # bare registered name ≡ sum(_)
@@ -310,15 +287,15 @@ aggr"strjoinuniq(_)"             # unique values joined into a display string
 
 `AggrHints` says how to aggregate each column, resolved by column name first,
 then element type (by subtyping), then a default (`Real → sum`, otherwise the
-single unique value). `agg` takes a **chain** also, exactly like `dim`:
-bare-symbol entries are existing key columns and `name => spec` entries are
-on-the-fly dimensions materialized before grouping — so `agg(df, [:County])` is
-a plain group-by and `agg(df, [:region, :bucket => dim"quantiles(sales, [.5])"])`
-groups by a derived bucket, with no separate "pivot" verb to remember.
+single unique value). `agg` takes a **chain**, exactly like `dim`: bare symbols
+are existing key columns, `name => spec` entries are dimensions materialized
+before grouping. So `agg(df, [:County])` is a plain group-by, and
+`agg(df, [:region, :bucket => dim"quantiles(sales, [.5])"])` groups by a
+derived bucket — no separate "pivot" verb to remember.
 
 `cols =` selects **and names** the reductions (default: every non-key column
 via hints). Each entry is one output column, and the same source column may
-appear any number of times under distinct names:
+appear repeatedly under distinct names:
 
 ```julia
 agg(df, [:County]; cols = [
@@ -336,13 +313,13 @@ names and collisions with chain keys are errors.
 
 `allbut =` is the mirror image of `cols`: keep the default hints-driven
 reduction for every non-key column *except* the listed ones (the two are
-mutually exclusive — both are selection modes). It is the quickest way to
-shed a helper column, e.g. `agg(df, chain; hints, allbut = [:gap])` after a
+mutually exclusive, both being selection modes). It is the quickest way to
+shed a helper column: `agg(df, chain; hints, allbut = [:gap])` after a
 sessionization chain built from `gap`.
 
 Selecting no measures at all — `cols = []`, or an `allbut` that excludes
-every remaining column — reduces `agg` to the distinct key combinations
-(`SELECT DISTINCT` in SQL terms), one row per group:
+every remaining column — reduces `agg` to the distinct key combinations, one
+row per group, which is SQL's `SELECT DISTINCT`:
 
 ```julia
 agg(df, [:region]; cols = [])   # every distinct region, no measure columns
@@ -350,11 +327,11 @@ agg(df, [:region]; cols = [])   # every distinct region, no measure columns
 
 ### Composite aggregation
 
-Panel data often needs **two-stage** reductions: with population snapshots by
-district over several years, "the average population" should sum the districts
-*within* each year first, then average the yearly totals — a single `mean` or
-`sum` over all rows computes something else entirely. A nested
-`|> groupby(keys...)` expresses the first stage inside the spec:
+Panel data often needs **two-stage** reductions. Given population snapshots by
+district over several years, "the average population" means summing the
+districts *within* each year, then averaging the yearly totals; one `mean` or
+`sum` over all rows computes something else. A nested `|> groupby(keys...)`
+puts the first stage inside the spec:
 
 ```julia
 aggr"mean(sum(_) |> groupby(year))"      # sum within each year, then average
@@ -377,7 +354,7 @@ listed in
 ## Pipelines
 
 `dim(chain...; hints)` and `agg(chain; hints, cols)` (no frame argument) return
-reusable callable transforms — `cols` measure entries ride along:
+reusable transforms — `cols` measure entries ride along:
 
 ```julia
 report = agg([:region, :quartile => dim"discretize(sales, quantiles = [.25, .5, .75])"];
@@ -389,23 +366,22 @@ df |> dim([:region, :z => dim"(sales - mean(sales)) / std(sales)"]) |> report
 
 ## Untrusted input: the trust boundary
 
-Every `dim"..."` and `aggr"..."` above was a **string** — and strings are the
+Every `dim"..."` and `aggr"..."` above was a **string**, and a string is the
 one spec form that can arrive from an end user's text field by accident. That
-is the situation this section is about, and it is the reason the package
-exists in this shape.
+is the situation this section is about, and the reason the package exists in
+this shape.
 
-This section states the rule and covers the *trusted* side. The untrusted side
-is large enough to be its own subsystem and has its own section:
-[The safe grammar](#the-safe-grammar).
+Here is the rule and the *trusted* side. The untrusted side is a subsystem in
+its own right, with its own section: [The safe grammar](#the-safe-grammar).
 
 ### The rule, and the colon flip
 
 **`Expr` / `Symbol` / `Function` specs are trusted; plain `String`s are
-untrusted** — parsed by the safe whitelist grammar everywhere in the API,
-with no exceptions: chains, dimension constructors, `dimspec`, `AggrHints`,
+untrusted** — parsed by the safe whitelist grammar everywhere in the API
+without exception: chains, dimension constructors, `dimspec`, `AggrHints`,
 `liftAggrSpecToFunc`. A String can never reach `eval`.
 
-Trusted `Expr` specs are compiled with `Core.eval(Main, …)` so that
+Trusted `Expr` specs are compiled with `Core.eval(Main, …)` so
 module-qualified names (`StatsBase.mean`) resolve against your loaded
 packages. The guards (must be a `:call`, no curly type-params, simple/dotted
 names only, reject any `!`) make this safe for **specs you author** but are
@@ -422,8 +398,8 @@ literals* need the colon (`"discretize(x, [0], boundedness = :boundedbelow)"`).
 
 ### Trusted Expr specs (advanced)
 
-The other side of the boundary, for package developers who need to go beyond
-the safe operators — full Julia inside a spec.
+The other side of the boundary, for package developers who need more than the
+safe operators — full Julia inside a spec.
 
 Trusted specs are `Expr`s (also bare `Symbol`s and functions — forms that
 cannot arrive from a text field). Quoted symbols mark columns (`:sales`),
@@ -455,12 +431,12 @@ dim(df, [:County, :top1 => dim"topnames(District, TestScr, 1)"],   # user-typed 
 
 ## The safe grammar
 
-Strings are the one spec form that can arrive from an end user's text field, so
-the untrusted path is a subsystem in its own right: a **whitelist grammar with
-no eval anywhere**, safe to wire straight to a text field via `parseaggr(s)` /
-`parsedim(s)` (the string macros are compile-time sugar for the same call).
-Only whitelisted operations exist, the result is an ordinary closure at the
-current world age, and it is cheap enough to re-parse on every keystroke.
+Strings can arrive from an end user's text field, so the untrusted path is a
+**whitelist grammar with no eval anywhere**: safe to wire straight to that
+field via `parseaggr(s)` / `parsedim(s)` (the string macros are compile-time
+sugar for the same call). Only listed operations exist, the result is an
+ordinary closure at the current world age, and re-parsing on every keystroke
+is cheap.
 
 ### Writing a spec
 
@@ -477,11 +453,11 @@ dim"discretize(x, [0, 10], boundedness = :boundedbelow)"   # `:sym` = an option 
   comparisons, so `sales > 10 && sales < 20` needs no parens.
 - a top-level `∘` / `|>` attaches an engine **modifier**, `orderby(cols...)` or
   `groupby(keys...)` — metadata, never called. A *nested* `inner |> groupby(...)`
-  is the different thing above: [composite aggregation](#composite-aggregation).
+  is something else: [composite aggregation](#composite-aggregation).
 - everything else is rejected: qualified names, macros, interpolation, lambdas,
   indexing, blocks, comprehensions, splats.
-- one wrinkle of "bare identifier = column" — `missing`, `pi` and `Inf` are
-  identifiers, hence *column references*, not constants. Missing-value defaults
+- one wrinkle: `missing`, `pi` and `Inf` are identifiers, hence *column
+  references*, not constants. Missing-value defaults
   are literals: `coalesce(x, 0)`, never `coalesce(x, missing)`.
 
 `listops()` shows the live vocabulary; the two [docs/](docs/) operator documents
@@ -490,7 +466,7 @@ describe every entry.
 ### What a host gets
 
 **Mistakes caught at parse time, not inside a group-by** — wrong arity, an
-unknown keyword, and a spec whose *shape* cannot be what it is being used as
+unknown keyword, and a spec whose *shape* cannot be what it is used as
 (`aggr"cumsum(_)"` returns one value per row; `dim"mean(x) |> groupby(g)"`
 collapses the very groups it is meant to label).
 
@@ -527,18 +503,18 @@ registerop!(:geomean, x -> exp(mean(log.(x))); shape = :reduce)   # aggr"geomean
 ```
 
 `shape` is how the parser knows an operator returns one value per group, per
-row, or per argument; declaring it is optional, and an operator that does not
-gets no shape checks rather than a guessed one.
+row, or per argument. Declaring it is optional; an operator without one gets no
+shape checks rather than guessed ones.
 
-Three documents carry the rest: **[docs/extending-the-grammar.md](docs/extending-the-grammar.md)**
+The rest is in other documents: **[docs/extending-the-grammar.md](docs/extending-the-grammar.md)**
 for writing your own operators, **[design/user-guidance.md](design/user-guidance.md)**
-for the whole guidance system and the sixteen rules it must satisfy, and the two
+for the whole guidance system and its sixteen rules, and the two
 operator references below.
 
 ## Operator reference
 
 Every shipped operator — signature, kwargs, and a worked example — lives in
-the two operator documents, which a test keeps in sync with the registry:
+the operator documents, which a test keeps in sync with the registry:
 
 - [docs/safe-dimension-operators.md](docs/safe-dimension-operators.md) —
   classifiers (`topnames`, `discretize`, `quantiles`, `where`), calendar
