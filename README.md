@@ -4,9 +4,21 @@ DataFrameAggrSpec does two things: it derives new dimensions from a DataFrame, a
 over them. Both compose — within the package, and with other packages. A "safe" parser accepts
 specs from untrusted text, so a package with a text field can wire this DSL straight to it.
 
+## Install
+
+```julia
+using Pkg; Pkg.add(url = "https://github.com/tonyhffong/DataFrameAggrSpec.git")
+```
+
+Requires Julia 1.11. This is **0.9.5**: pre-1.0, and the API still moves between
+minor versions — 0.8.0 merged three aggregation verbs into `agg`, 0.5.0 removed
+sibling tuples from chains. The [design notes](#design-notes) record what is
+settled and why.
+
 ## Contents
 
 - [Introduction](#introduction)
+  - [Why not `groupby` + `combine`?](#why-not-groupby--combine)
 - [Dimensioning](#dimensioning)
   - [Chains: dimensions become pivot keys](#chains-dimensions-become-pivot-keys)
   - [The two dimension kinds](#the-two-dimension-kinds)
@@ -15,10 +27,10 @@ specs from untrusted text, so a package with a text field can wire this DSL stra
 - [Pipelines](#pipelines)
 - [Untrusted input: the trust boundary](#untrusted-input-the-trust-boundary)
   - [The rule, and the colon flip](#the-rule-and-the-colon-flip)
-  - [Trusted Expr specs (advanced)](#trusted-expr-specs-advanced)
 - [The safe grammar](#the-safe-grammar)
   - [Writing a spec](#writing-a-spec)
   - [What a host gets](#what-a-host-gets)
+- [Trusted Expr specs (advanced)](#trusted-expr-specs-advanced)
 - [Operator reference](#operator-reference)
 - [Design notes](#design-notes)
 
@@ -57,6 +69,43 @@ Two kinds of operator, and one rule that composes them:
        alt="dim adds a sibling-computed column to every row; agg reduces to one row per key">
 </p>
 
+### Why not `groupby` + `combine`?
+
+For a fixed query, DataFrames is already good and this package adds nothing —
+these produce the same column:
+
+```julia
+df = DataFrame(region = ["E", "E", "W", "W", "W"],
+               date   = [1, 2, 1, 2, 3],
+               sales  = [10.0, 20.0, 5.0, 15.0, 30.0])
+
+transform(groupby(df, :region), :sales => (s -> s ./ sum(s)) => :share)
+dim(df, [:region, :share => dim"sales / sum(sales)"])
+```
+
+Two things change that. First, **a derived key groups the next derived column**.
+Rank districts within a county, then bucket scores within *that* ranking, and the
+grouping has to be restated at every level — with the label logic written by hand:
+
+```julia
+# `schools` is the County/District frame defined under Chains, below.
+# DataFrames: regroup at each level, supply your own label functions
+t1 = transform(groupby(schools, :County),
+               [:District, :TestScr] => rank_top_2 => :top2d)   # you write rank_top_2
+t2 = transform(groupby(t1, [:County, :top2d, :District]),       # grouping restated
+               :TestScr => quartile_label => :scoreq)           # you write quartile_label
+
+# here: each level is named once, and the grouping accumulates leftward
+dim(schools, [:County,
+              :top2d  => dim"topnames(District, TestScr, 2)",
+              :District,
+              :scoreq => dim"discretize(TestScr, quantiles = [.5])"])
+```
+
+Second, **the specs are strings**. `"sales / sum(sales)"` can arrive from a text
+field, a config file or a database row, and be checked before it runs. An
+anonymous function cannot.
+
 ## Dimensioning
 
 Dimensioning **adds new columns** to a DataFrame. A dimension differs from an ordinary computed
@@ -93,6 +142,11 @@ dim(df, [:region, :cum => dim"cumsum(sales) ∘ orderby(date)"])
 # label every row by its REGION's rank on total sales ("1. W", "2. E") --
 # the groups are ranked, and each member row receives its group's label
 dim(df, [:rank => dim"topnames(region, sales, 2)"])
+#  region  date  sales  rank
+#  E       1     10.0   2. E     (E totals 30, second)
+#  E       2     20.0   2. E
+#  W       1      5.0   1. W     (W totals 50, first)
+#  ...
 
 # bucket each row by which sales quantile it falls in ("1. [0%, 25%)", ...)
 dim(df, [:q => dim"quantiles(sales, [.25, .5])"])
@@ -177,15 +231,21 @@ everything to its left in the chain** (its *left context*), and once declared
 it is a key for everything to its right:
 
 ```julia
+# a second, wider frame -- school districts nested in counties
+schools = DataFrame(County   = ["Kern", "Kern", "Kern", "Fresno", "Fresno"],
+                    District = ["Delano", "Wasco", "Taft", "Clovis", "Sanger"],
+                    TestScr  = [655.0, 640.5, 672.0, 690.5, 661.0],
+                    EnrlTot  = [1200, 800, 450, 3100, 1750])
+
 chain = [:County, # existing column, County
          :top5d  => dim"topnames(District, TestScr, 5)",   # per County, rank Districts
          :District,
          :scoreq => dim"discretize(TestScr, quantiles = [.25, .5, .75])"]
                     # row-level quartile within [:County, :top5d, :District]
 
-df2 = dim(df, chain)          # just add the columns
-out = agg(df, chain; hints)   # or: group by the chain, one row per key
-                              # combination, other cols reduced (hints: see below)
+df2 = dim(schools, chain)     # just add the columns
+out = agg(schools, chain)     # or: group by the chain, one row per key
+                              # combination, other cols reduced by default
 ```
 
 <p align="center">
@@ -214,7 +274,7 @@ More chain forms:
   ```julia
   df |> dim([:region, :share => dim"sales / sum(sales)"],
             [:region, :cum   => dim"cumsum(sales) |> orderby(date)"]
-           ) |> agg([:region, :bucket => dim"quantiles(sales, [.5])"]; hints)
+           ) |> agg([:region, :bucket => dim"quantiles(sales, [.5])"])
   ```
 
   The syntax forces the distinction: in a chain it is a key; in its own
@@ -271,8 +331,14 @@ remaining columns:
 hints = AggrHints(:TestScr => aggr"sum(_ * EnrlTot) / sum(EnrlTot)",
                   AbstractString => aggr"uniqvalue")
 
-agg(df, [:County]; hints)            # one row per County, all other cols reduced
-agg(df, chain; hints)                # group by chain keys (existing OR computed)
+agg(schools, [:County]; hints)       # one row per County, all other cols reduced
+agg(schools, chain; hints)           # group by chain keys (existing OR computed)
+
+#  County  District  TestScr  EnrlTot
+#  Kern     missing  653.388     2450   <- TestScr is enrolment-weighted;
+#  Fresno   missing  679.856     4850      District is `missing` because a county
+#                                          has several, and `uniqvalue` returns a
+#                                          value only when there is exactly one
 ```
 
 The reductions use the same safe grammar (`aggr"..."`), with one addition:
@@ -289,7 +355,7 @@ aggr"strjoinuniq(_)"             # unique values joined into a display string
 then element type (by subtyping), then a default (`Real → sum`, otherwise the
 single unique value). `agg` takes a **chain**, exactly like `dim`: bare symbols
 are existing key columns, `name => spec` entries are dimensions materialized
-before grouping. So `agg(df, [:County])` is a plain group-by, and
+before grouping. So `agg(schools, [:County])` is a plain group-by, and
 `agg(df, [:region, :bucket => dim"quantiles(sales, [.5])"])` groups by a
 derived bucket — no separate "pivot" verb to remember.
 
@@ -298,12 +364,15 @@ via hints). Each entry is one output column, and the same source column may
 appear repeatedly under distinct names:
 
 ```julia
-agg(df, [:County]; cols = [
+agg(schools, [:County]; cols = [
     :EnrlTot,                                  # hints-resolved, output :EnrlTot
     :TestScr => aggr"maximum(_)",              # inline spec, output stays :TestScr
     :TestScr => aggr"mean(_)" => :scr_avg,     # named measure
     :TestScr => aggr"std(_)"  => :scr_sd,      # ... same column again
 ])
+#  County  EnrlTot  TestScr  scr_avg  scr_sd
+#  Kern       2450    672.0  655.833  15.7665
+#  Fresno     4850    690.5  675.75   20.8597
 ```
 
 The spec slot takes anything a hint value takes — a safe `aggr"..."` / plain
@@ -371,8 +440,11 @@ one spec form that can arrive from an end user's text field by accident. That
 is the situation this section is about, and the reason the package exists in
 this shape.
 
-Here is the rule and the *trusted* side. The untrusted side is a subsystem in
-its own right, with its own section: [The safe grammar](#the-safe-grammar).
+The rule is below. The untrusted side follows it, in
+[The safe grammar](#the-safe-grammar) — that is the common case, and the
+subsystem most of the package is. The trusted side is last, in
+[Trusted Expr specs](#trusted-expr-specs-advanced), for hosts that need full
+Julia in a spec.
 
 ### The rule, and the colon flip
 
@@ -395,39 +467,6 @@ neighbour ([design/composition-rules.md](design/composition-rules.md), R5).
 exception. In trusted Exprs everything is Julia, so *columns* need the colon
 (`:( sum(:sales) )`); in untrusted strings everything is a column, so *symbol
 literals* need the colon (`"discretize(x, [0], boundedness = :boundedbelow)"`).
-
-### Trusted Expr specs (advanced)
-
-The other side of the boundary, for package developers who need more than the
-safe operators — full Julia inside a spec.
-
-Trusted specs are `Expr`s (also bare `Symbol`s and functions — forms that
-cannot arrive from a text field). Quoted symbols mark columns (`:sales`),
-`:_` marks the aggregation target, and `^(:sym)` escapes a symbol from column
-substitution:
-
-```julia
-using StatsBase
-
-f = liftAggrSpecToFunc(:TestScr, :( StatsBase.mean(:_, StatsBase.Weights(:EnrlTot)) ))
-Base.invokelatest(f, df)     # raw lifted functions live at a fresh world-age;
-                             # agg / dim handle this internally
-
-liftAggrSpecToFunc(:TestScr, :sum)                # bare Symbol → sum(df.TestScr)
-hints = AggrHints(:TestScr => :( mean(:_, Weights(:EnrlTot)) ))
-dim(df, [:region, :share => :( :sales ./ sum(:sales) )])
-:( discretize(:x, [0, 1]; boundedness = ^(:boundedbelow)) )
-```
-
-Trusted and safe specs interlace freely — each chain entry is resolved
-independently, so host-authored `Expr` dims compose with user-typed `dim"..."`
-dims (the intended TUI pattern), and measure statements mix trust the same way:
-
-```julia
-dim(df, [:County, :top1 => dim"topnames(District, TestScr, 1)"],   # user-typed key
-        [:County, :top1, :share => :( :TestScr ./ sum(:TestScr) )], # trusted measure
-        [:County, :top1, :cum => dim"cumsum(EnrlTot) |> orderby(TestScr)"])
-```
 
 ## The safe grammar
 
@@ -510,6 +549,39 @@ The rest is in other documents: **[docs/extending-the-grammar.md](docs/extending
 for writing your own operators, **[design/user-guidance.md](design/user-guidance.md)**
 for the whole guidance system and its sixteen rules, and the two
 operator references below.
+
+## Trusted Expr specs (advanced)
+
+The other side of the boundary, for package developers who need more than the
+safe operators — full Julia inside a spec.
+
+Trusted specs are `Expr`s (also bare `Symbol`s and functions — forms that
+cannot arrive from a text field). Quoted symbols mark columns (`:sales`),
+`:_` marks the aggregation target, and `^(:sym)` escapes a symbol from column
+substitution:
+
+```julia
+using StatsBase
+
+f = liftAggrSpecToFunc(:TestScr, :( StatsBase.mean(:_, StatsBase.Weights(:EnrlTot)) ))
+Base.invokelatest(f, schools)  # raw lifted functions live at a fresh world-age;
+                               # agg / dim handle this internally
+
+liftAggrSpecToFunc(:TestScr, :sum)                # bare Symbol → sum(schools.TestScr)
+hints = AggrHints(:TestScr => :( mean(:_, Weights(:EnrlTot)) ))
+dim(df, [:region, :share => :( :sales ./ sum(:sales) )])
+:( discretize(:x, [0, 1]; boundedness = ^(:boundedbelow)) )
+```
+
+Trusted and safe specs interlace freely — each chain entry is resolved
+independently, so host-authored `Expr` dims compose with user-typed `dim"..."`
+dims (the intended TUI pattern), and measure statements mix trust the same way:
+
+```julia
+dim(schools, [:County, :top1 => dim"topnames(District, TestScr, 1)"],  # user-typed key
+             [:County, :top1, :share => :( :TestScr ./ sum(:TestScr) )], # trusted measure
+             [:County, :top1, :cum => dim"cumsum(EnrlTot) |> orderby(TestScr)"])
+```
 
 ## Operator reference
 
