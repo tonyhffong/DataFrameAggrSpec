@@ -53,7 +53,7 @@ Each is a small change to the question. In a typical query language it is a larg
 scattered over many lines. Hence the design rule: **a small change to the analysis should be a
 small, local and expressive change to the code.**
 
-Two kinds of operator, and one rule that composes them:
+This package defines two kinds of operator, and one composition rule:
 
 - **Dimensioning** — adds NEW columns, never touching existing data. Each row's value comes from
   its *sibling rows*: those sharing its partition keys (`dim"..."`, chains, `dim`).
@@ -422,16 +422,68 @@ listed in
 
 ## Pipelines
 
-`dim(chain...; hints)` and `agg(chain; hints, cols)` (no frame argument) return
-reusable transforms — `cols` measure entries ride along:
+Call `dim(chains...; hints)` or `agg(chain; hints, cols)` with **no frame** and
+you get the transform back instead of a result. A report becomes a value:
+define it once, apply it wherever. That is the shape a host wants — build the
+transform when the user submits a spec, then re-apply it as data arrives.
 
 ```julia
-report = agg([:region, :quartile => dim"discretize(sales, quantiles = [.25, .5, .75])"];
-             hints = AggrHints(:sales => aggr"sum"))
-df |> report                          # apply
-df |> dim([:region, :z => dim"(sales - mean(sales)) / std(sales)"]) |> report
-(report ∘ dim([...]))(df)             # Base ∘ composes transforms
+q1 = DataFrame(region = ["E", "E", "E", "W", "W", "W"],
+               month  = [1, 2, 3, 1, 2, 3],
+               sales  = [10.0, 20.0, 15.0, 5.0, 30.0, 25.0])
+q2 = DataFrame(region = ["E", "E", "W", "W"],
+               month  = [4, 5, 4, 5],
+               sales  = [12.0, 8.0, 40.0, 10.0])
+
+report = agg([:region]; cols = [:sales => aggr"sum"        => :total,
+                                :sales => aggr"maximum(_)" => :best])
+
+q1 |> report
+#  region  total  best
+#  E        45.0  20.0
+#  W        60.0  30.0
+
+q2 |> report      # same definition, next quarter's rows, nothing recompiled
+#  region  total  best
+#  E        20.0  12.0
+#  W        50.0  40.0
 ```
+
+`dim` curries the same way, and takes **several chains at once** — one per side
+measure, each rebuilding its own context:
+
+```julia
+sides = dim([:region, :share => dim"sales / sum(sales)"],
+            [:region, :cum   => dim"cumsum(sales) |> orderby(month)"])
+
+q1 |> sides
+#  region  month  sales  share   cum
+#  E       1      10.0   0.222…  10.0
+#  E       2      20.0   0.444…  30.0
+#  E       3      15.0   0.333…  45.0
+#  ...
+```
+
+Transforms compose, so a dimension pass and a reduction travel together —
+`bucket` adds a key, `byTier` groups by it:
+
+```julia
+bucket = dim([:region, :tier => dim"quantiles(sales, [.5])"])
+byTier = agg([:region, :tier]; cols = [:sales => aggr"sum" => :total])
+
+q1 |> bucket |> byTier      # left to right, as read
+(byTier ∘ bucket)(q1)       # right to left, Base's ∘ -- the same pipeline
+#  region  tier            total
+#  E       1. [0%, 50%)     10.0
+#  E       2. [50%, 100%]   35.0
+#  W       1. [0%, 50%)      5.0
+#  W       2. [50%, 100%]   55.0
+```
+
+One caveat: `∘` composes two **transforms**, and a frame is not one.
+`df ∘ report` builds a `ComposedFunction` that looks fine and fails only when
+called, with `MethodError: objects of type DataFrame are not callable`. Apply
+with `df |> report`.
 
 ## Untrusted input: the trust boundary
 
