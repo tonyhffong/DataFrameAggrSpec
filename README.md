@@ -15,8 +15,55 @@ minor versions — 0.8.0 merged three aggregation verbs into `agg`, 0.5.0 remove
 sibling tuples from chains. The [design notes](#design-notes) record what is
 settled and why.
 
+## Quick start
+
+```julia
+using DataFrameAggrSpec, DataFrames
+
+df = DataFrame(region = ["E", "E", "W", "W", "W"],
+               sales  = [10.0, 20.0, 5.0, 15.0, 30.0])
+
+# dim ADDS a column: each row's share of its region's total sales
+dim(df, [:region, :share => dim"sales / sum(sales)"])
+#  region  sales  share
+#  E       10.0   0.333…
+#  E       20.0   0.667…
+#  W        5.0   0.1
+#  ...
+
+# agg REDUCES to one row per region
+agg(df, [:region]; cols = [:sales => aggr"sum" => :total])
+#  region  total
+#  E        30.0
+#  W        50.0
+```
+
+That's the whole shape of the package: `dim"..."` and `aggr"..."` are small
+string specs — bare words are columns — and `dim`/`agg` are the two verbs that
+use them, one adding columns, one reducing rows. Everything from here on is
+about writing richer specs and combining them — the two calls above don't
+change shape as the specs get more elaborate.
+
+A few terms recur before their own sections formally define them:
+
+- **spec** — one computation, written as a `dim"..."` / `aggr"..."` string (or,
+  for trusted code, an `Expr`/`Symbol`/`Function`). `"sales / sum(sales)"` above
+  is a spec.
+- **dimension** — a new column defined by a spec, added by `dim`. Its value
+  comes from *sibling rows* (rows sharing its grouping keys), not from its own
+  row alone — that's what makes `:share` above a dimension rather than an
+  ordinary computed column.
+- **chain** — the ordered list `dim`/`agg` take as their second argument
+  (`[:region, ...]` above). Plain symbols name existing columns; `name => spec`
+  entries declare new dimensions inline. Chains are what let dimensions nest
+  and become pivot keys for each other, covered under
+  [Chains](#chains-dimensions-become-pivot-keys).
+- **`agg`** — the reducing counterpart to `dim`: groups by a chain and turns
+  each group into one row.
+
 ## Contents
 
+- [Quick start](#quick-start)
 - [Introduction](#introduction)
   - [Why not `groupby` + `combine`?](#why-not-groupby--combine)
 - [Dimensioning](#dimensioning)
@@ -206,21 +253,19 @@ listed in [docs/safe-dimension-operators.md](docs/safe-dimension-operators.md).
 mixes with plain columns (`groupby(region, yyyymm(date))`). The `[col, ...]`
 array spelling stays plain-column-only.
 
-**Why two spellings for the same separator?** `spec ∘ orderby(date)` and
-`spec |> orderby(date)` mean the same thing, and the redundancy is deliberate.
-`∘` is the truthful glyph: a modifier is not a pipeline stage the data flows
-through — nothing is ever called — it *composes* with the spec, as `g ∘ f`
-builds a new function without running either. It is also shorter on screen. But
-specs arrive from TUI text fields and config files, where `\circ`-tab
-completion does not exist and a Unicode glyph is a real barrier, so ASCII `|>`
-is accepted everywhere. Whichever you type, read it as "…with this engine
-option", not "pipe the data into `orderby`".
-
-Both glyphs share one caveat: they parse with Julia's precedence — `∘` binds
-as tightly as `*`, `|>` tighter than a comparison — so parenthesize a spec
-whose top level is arithmetic or a comparison before attaching the modifier:
-`(sales - lag(sales)) |> orderby(date)`. The unparenthesized form is caught at
-parse time with the same advice.
+**Two spellings, one meaning.** `spec ∘ orderby(date)` and
+`spec |> orderby(date)` are identical. `∘` is the more truthful glyph — a
+modifier *composes* with the spec rather than something data flows through —
+and shorter on screen; `|>` exists because specs arrive from TUI text fields
+and config files, where Unicode input is a real barrier. Read either as
+"…with this engine option", not "pipe the data into `orderby`". Both parse at
+Julia's precedence, so parenthesize a spec whose top level is arithmetic or a
+comparison before attaching the modifier — `(sales - lag(sales)) |>
+orderby(date)` — the unparenthesized form is caught at parse time with the
+same advice. Why both spellings exist, and why the order between two
+modifiers carries no meaning, is in
+[design/glyph-choice.md](design/glyph-choice.md) and
+[design/compound-modifiers.md](design/compound-modifiers.md).
 
 ### Chains: dimensions become pivot keys
 
@@ -491,6 +536,12 @@ Every `dim"..."` and `aggr"..."` above was a **string**, and a string is the
 one spec form that can arrive from an end user's text field by accident. That
 is the situation this section is about, and the reason the package exists in
 this shape.
+
+**Scripting for yourself, not building a UI or a text field?** None of this
+changes what you can do — skip ahead to
+[Trusted Expr specs](#trusted-expr-specs-advanced), where `:sales`-style
+`Expr`s give you full Julia with no whitelist. Come back here once a spec
+needs to come from somewhere you don't control.
 
 The rule is below. The untrusted side follows it, in
 [The safe grammar](#the-safe-grammar) — that is the common case, and the
