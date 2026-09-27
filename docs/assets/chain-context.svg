@@ -23,42 +23,38 @@
   </defs>
 
   <!-- forward arrow: declared dimension is a key downstream -->
-  <text class="cap muted" x="432" y="30" text-anchor="middle">…once declared, immediately a pivot key for everything to its right</text>
-  <path class="arrow" d="M280,74 C320,38 545,38 615,76" marker-end="url(#ah2)"/>
+  <text class="cap muted" x="445" y="30" text-anchor="middle">…once declared, immediately a pivot key for everything to its right</text>
+  <path class="arrow" d="M300,74 C360,38 520,38 575,76" marker-end="url(#ah2)"/>
 
   <!-- labels above boxes -->
   <text class="lbl muted"  x="50"  y="66" text-anchor="middle">existing key</text>
-  <text class="lbl accent" x="200" y="66" text-anchor="middle">declares a dimension = new key</text>
-  <text class="lbl muted"  x="445" y="66" text-anchor="middle">existing key</text>
+  <text class="lbl accent" x="180" y="66" text-anchor="middle">declares a dimension = new key</text>
+  <text class="lbl accent" x="660" y="66" text-anchor="middle">declares a dimension</text>
 
   <!-- chain entry boxes -->
   <rect class="keybox" x="10"  y="78" width="80"  height="56" rx="8"/>
-  <rect class="dimbox" x="105" y="78" width="275" height="56" rx="8"/>
-  <rect class="keybox" x="400" y="78" width="90"  height="56" rx="8"/>
-  <rect class="dimbox" x="505" y="78" width="215" height="56" rx="8"/>
+  <rect class="dimbox" x="105" y="78" width="325" height="56" rx="8"/>
+  <rect class="dimbox" x="445" y="78" width="275" height="56" rx="8"/>
   <g class="mono" font-size="12">
     <text x="50"  y="110" text-anchor="middle">:County</text>
-    <text x="117" y="101">:top5d =&gt;</text>
-    <text x="117" y="119">dim"topnames(District, TestScr, 5)"</text>
-    <text x="445" y="110" text-anchor="middle">:District</text>
-    <text x="517" y="101">:scoreq =&gt;</text>
-    <text x="517" y="119">dim"discretize(TestScr, …)"</text>
+    <text x="117" y="101">:half =&gt;</text>
+    <text x="117" y="119">dim"discretize(TestScr, quantiles = [.5])"</text>
+    <text x="457" y="101">:top1 =&gt;</text>
+    <text x="457" y="119">dim"topnames(District, TestScr, 1)"</text>
   </g>
   <g class="mono muted" font-size="13">
     <text x="97"  y="110" text-anchor="middle">,</text>
-    <text x="392" y="110" text-anchor="middle">,</text>
-    <text x="497" y="110" text-anchor="middle">,</text>
+    <text x="437" y="110" text-anchor="middle">,</text>
   </g>
 
-  <!-- left context of :top5d -->
-  <text class="cap" x="105" y="162">left context of <tspan class="mono">:top5d</tspan> = <tspan class="mono">[:County]</tspan></text>
-  <text class="cap muted" x="105" y="180">— topnames ranks Districts per County</text>
+  <!-- left context of :half -->
+  <text class="cap" x="105" y="162">left context of <tspan class="mono">:half</tspan> = <tspan class="mono">[:County]</tspan></text>
+  <text class="cap muted" x="105" y="180">— median split per County</text>
 
-  <!-- left context of :scoreq -->
-  <text class="cap" x="650" y="162" text-anchor="end">left context of <tspan class="mono">:scoreq</tspan> =</text>
-  <text class="cap mono" x="720" y="180" text-anchor="end">[:County, :top5d, :District]</text>
-  <text class="cap muted" x="720" y="198" text-anchor="end">— quartiles computed within that partition</text>
+  <!-- left context of :top1 -->
+  <text class="cap" x="720" y="162" text-anchor="end">left context of <tspan class="mono">:top1</tspan> = <tspan class="mono">[:County, :half]</tspan></text>
+  <text class="cap muted" x="720" y="180" text-anchor="end">— best District within each County-and-half</text>
 
   <!-- bottom note -->
-  <text class="cap muted" x="10" y="236"><tspan class="mono" style="fill:var(--fg)">dim(df, chain)</tspan> adds :top5d and :scoreq&#160;&#160;·&#160;&#160;<tspan class="mono" style="fill:var(--fg)">agg(df, chain)</tspan> groups by all four keys and reduces the rest</text>
+  <text class="cap muted" x="10" y="236"><tspan class="mono" style="fill:var(--fg)">dim(df, chain)</tspan> adds :half and :top1&#160;&#160;·&#160;&#160;<tspan class="mono" style="fill:var(--fg)">agg(df, chain)</tspan> groups by all three keys and reduces the rest</text>
 </svg>
